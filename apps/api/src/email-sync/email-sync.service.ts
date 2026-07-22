@@ -608,9 +608,9 @@ export class EmailSyncService {
       throw new Error(`Failed to insert transaction: ${error.message}`);
     }
 
-    this.logger.log(
-      `Created ${parsed.type} transaction of ${parsed.amount} COP from ${bank} (msg ${messageId})`,
-    );
+    // Do not log the amount — server logs are shipped/retained and this is
+    // sensitive financial data. Log only non-sensitive metadata.
+    this.logger.log(`Created ${parsed.type} transaction from ${bank} (msg ${messageId})`);
     return true;
   }
 

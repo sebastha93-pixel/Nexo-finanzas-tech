@@ -43,7 +43,8 @@ export class MonthlyCloseController {
     }
 
     const result = await this.monthlyCloseService.closeMonthPublic(year, month);
-    return { ...result, year, month };
+    // Return only counts — never the raw error strings (DB internals).
+    return { processed: result.processed, errorCount: result.errors.length, year, month };
   }
 
   // Constant-time comparison of the admin secret; mirrors AdminController.

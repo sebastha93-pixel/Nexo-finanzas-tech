@@ -67,14 +67,16 @@ export class MonthlyCloseService {
           }, { onConflict: 'user_id,year,month' });
 
         if (upsertErr) {
-          errors.push(`user ${userId}: ${upsertErr.message}`);
+          // Keep error strings free of user identifiers and amounts.
+          errors.push(upsertErr.message);
         } else {
           processed++;
-          this.logger.log(`Closed month ${year}-${month} for user ${userId}: income=${totalIncome}, expenses=${totalExpenses}`);
+          // Do not log per-user income/expense amounts (sensitive financial data).
+          this.logger.log(`Closed month ${year}-${month} for a user`);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`user ${userId}: ${msg}`);
+        errors.push(msg);
       }
     }
 
