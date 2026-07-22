@@ -679,44 +679,11 @@ export function SettingsScreen({ userId }: { userId: string }) {
   }
 
   async function runDiagnostic() {
-    setDiagRunning(true);
-    setDiagResult(null);
-    try {
-      const headers = await getAuthHeaders();
-      const res = await fetch(`${RAILWAY_API}/email-sync/debug-sample`, { headers });
-      const raw = await res.json();
-
-      if (!Array.isArray(raw)) {
-        setDiagResult(`El servidor respondió (HTTP ${res.status}):\n${JSON.stringify(raw, null, 2)}\n\n⚠️ El backend necesita redesploy para activar este endpoint.`);
-        return;
-      }
-
-      const data = raw as {
-        bank: string; subject: string; accountSuffix: string;
-        accountHolder: string; parsed: string; body: string; bodyLen: number;
-      }[];
-
-      if (data.length === 0) {
-        setDiagResult('Sin correos bancarios encontrados en tu Gmail.');
-        return;
-      }
-
-      const lines = data.map((d, i) =>
-        `── Email ${i + 1} ──────────────────\n` +
-        `Banco:    ${d.bank}\n` +
-        `Asunto:   ${d.subject}\n` +
-        `Sufijo:   ${d.accountSuffix || '❌ no encontrado'}\n` +
-        `Titular:  ${d.accountHolder || '❌ no encontrado'}\n` +
-        `Parseado: ${d.parsed}\n` +
-        `Longitud: ${d.bodyLen} chars\n` +
-        `Cuerpo:\n${d.body}\n`
-      ).join('\n');
-      setDiagResult(lines);
-    } catch (e) {
-      setDiagResult('Error de red: ' + String(e));
-    } finally {
-      setDiagRunning(false);
-    }
+    // The raw-email diagnostic endpoint (debug-sample) was removed from the
+    // backend for security — it exposed full email bodies. Diagnostics are no
+    // longer available from the client.
+    setDiagRunning(false);
+    setDiagResult('La herramienta de diagnóstico fue deshabilitada por seguridad.');
   }
 
   async function connectGmail() {
