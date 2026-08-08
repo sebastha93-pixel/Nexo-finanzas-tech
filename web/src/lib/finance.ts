@@ -114,7 +114,7 @@ export async function loadFinanceSnapshot(): Promise<FinanceSnapshot | null> {
       .order('created_at', { ascending: false }),
     supabase
       .from('transactions')
-      .select('account_id, transaction_type, amount')
+      .select('account_id, to_account_id, transaction_type, amount')
       .eq('user_id', user.id),
   ]);
 
@@ -124,8 +124,23 @@ export async function loadFinanceSnapshot(): Promise<FinanceSnapshot | null> {
   let linkedIncome = 0, linkedExpense = 0;
 
   for (const txn of (allTxnsRes.data ?? [])) {
-    const t = txn as { account_id: string | null; transaction_type: string; amount: number };
+    const t = txn as { account_id: string | null; to_account_id: string | null; transaction_type: string; amount: number };
     const amt = Number(t.amount) || 0;   // guard against null/undefined → NaN
+
+    // A transfer moves money between the user's OWN accounts: net-zero for
+    // income/expense totals — just debit the source and credit the destination.
+    if (t.transaction_type === 'transfer') {
+      if (t.account_id) {
+        if (!txnsByAccount[t.account_id]) txnsByAccount[t.account_id] = { income: 0, expense: 0 };
+        txnsByAccount[t.account_id].expense += amt;
+      }
+      if (t.to_account_id) {
+        if (!txnsByAccount[t.to_account_id]) txnsByAccount[t.to_account_id] = { income: 0, expense: 0 };
+        txnsByAccount[t.to_account_id].income += amt;
+      }
+      continue;
+    }
+
     if (t.transaction_type === 'income') globalIncome += amt; else globalExpense += amt;
     if (!t.account_id) continue;
     if (!txnsByAccount[t.account_id]) txnsByAccount[t.account_id] = { income: 0, expense: 0 };
