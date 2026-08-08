@@ -83,9 +83,20 @@ Registrar el esquema `com.nexofinanzas.app` para que el SO reabra la app:
 Todo lo demás ya funciona en nativo (registro manual, patrimonio, metas, chat
 IA, ajustes).
 
+## Biometría (Face ID / huella) — ✅ implementada
+El desbloqueo con biometría ya está en la pantalla de bloqueo
+(`@aparajita/capacitor-biometric-auth`, wrapper en `web/src/lib/biometric.ts`).
+En un dispositivo nativo con biometría registrada, la pantalla de bloqueo
+auto-solicita Face ID/huella y ofrece un botón "Usar biometría"; en web es no-op.
+
+**Falta solo el permiso en iOS** — agrega a `web/ios/App/App/Info.plist`:
+```xml
+<key>NSFaceIDUsageDescription</key>
+<string>ORIA usa Face ID para desbloquear tu información financiera.</string>
+```
+Android no requiere permiso extra (usa BiometricPrompt).
+
 ## Recomendado antes de publicar
-- **Biometría** para desbloqueo: `@capacitor-community/biometric-auth` o
-  `capacitor-native-biometric` (encaja con la pantalla de bloqueo existente).
 - **Splash / status bar**: `@capacitor/splash-screen` y `@capacitor/status-bar`
   ya están en dependencias; inicialízalos en el arranque para el look nativo.
 - **Íconos y splash**: usar `@capacitor/assets` para generar todos los tamaños

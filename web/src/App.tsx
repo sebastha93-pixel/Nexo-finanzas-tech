@@ -17,6 +17,7 @@ import { C }                    from './theme';
 import { Capacitor }            from '@capacitor/core';
 import { App as CapApp }        from '@capacitor/app';
 import { Browser }              from '@capacitor/browser';
+import { biometricAvailable, biometricUnlock } from './lib/biometric';
 
 type Screen = 'dashboard' | 'patrimony' | 'transactions' | 'goals' | 'ai' | 'settings';
 
@@ -27,6 +28,24 @@ function LockScreen({ email, onUnlock, onSignOut }: { email: string; onUnlock: (
   const [pwd, setPwd]       = useState('');
   const [error, setError]   = useState('');
   const [loading, setLoading] = useState(false);
+  const [bioAvailable, setBioAvailable] = useState(false);
+
+  async function tryBiometric() {
+    const ok = await biometricUnlock('Desbloquea ORIA');
+    if (ok) onUnlock();
+  }
+
+  // On a native device with enrolled biometrics, offer it and auto-prompt once.
+  useEffect(() => {
+    let cancelled = false;
+    biometricAvailable().then(available => {
+      if (cancelled || !available) return;
+      setBioAvailable(true);
+      void tryBiometric();
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleUnlock() {
     if (!pwd.trim()) return;
@@ -81,6 +100,17 @@ function LockScreen({ email, onUnlock, onSignOut }: { email: string; onUnlock: (
           }}>
           {loading ? 'Verificando…' : 'Desbloquear'}
         </button>
+        {bioAvailable && (
+          <button
+            onClick={tryBiometric}
+            style={{
+              width: '100%', padding: '12px 0', borderRadius: 12, border: `1px solid ${C.border}`,
+              background: C.surface, color: C.text, fontSize: 14, fontWeight: 700, cursor: 'pointer',
+              fontFamily: "'DM Sans',sans-serif", display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}>
+            <span style={{ fontSize: 18 }}>🔒</span> Usar biometría
+          </button>
+        )}
         <button
           onClick={onSignOut}
           style={{
