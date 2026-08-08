@@ -181,6 +181,19 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Native look: dark-navy status bar with light text, and hide the splash
+  // once the app shell is mounted. Dynamic imports keep these out of the web bundle.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    import('@capacitor/status-bar').then(({ StatusBar, Style }) => {
+      StatusBar.setStyle({ style: Style.Light }).catch(() => {});
+      StatusBar.setBackgroundColor({ color: '#081426' }).catch(() => {}); // Android only
+    }).catch(() => {});
+    import('@capacitor/splash-screen').then(({ SplashScreen }) => {
+      SplashScreen.hide().catch(() => {});
+    }).catch(() => {});
+  }, []);
+
   // Native deep-link return from the Gmail OAuth flow
   // (com.nexofinanzas.app://gmail-connected?email=…&count=…).
   useEffect(() => {
