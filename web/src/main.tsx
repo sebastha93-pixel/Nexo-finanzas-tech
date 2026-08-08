@@ -43,14 +43,24 @@ function showOverlay(title: string, detail: string) {
   document.body.appendChild(div);
 }
 
-// Stale SW chunk: "Script error." with no detail = cross-origin import failure.
-// This happens when the SW activates with new assets but the old app shell tries
-// to import old chunk names that are no longer cached. Safest response: reload.
-function isChunkLoadError(msg: unknown, err: Error | null | undefined): boolean {
-  if (String(msg) === 'Script error.') return true;
-  if (err?.message?.includes('dynamically imported module')) return true;
-  if (err?.message?.includes('Failed to fetch')) return true;
+// Genuine stale-chunk / dynamic-import failure after a new deploy → reload.
+// Deliberately NARROW: a bare "Script error." (cross-origin, e.g. a browser
+// extension) or a generic "Failed to fetch" (any network blip) must NOT trigger
+// a reload — that caused spurious reload loops.
+function isChunkLoadError(_msg: unknown, err: Error | null | undefined): boolean {
+  const m = err?.message ?? '';
   if (err?.name === 'ChunkLoadError') return true;
+  if (/dynamically imported module/i.test(m)) return true;
+  if (/importing a module script failed/i.test(m)) return true;
+  if (/error loading dynamically imported module/i.test(m)) return true;
+  return false;
+}
+
+// Benign errors that should never surface a blocking overlay.
+function isBenignError(msg: unknown, err: Error | null | undefined): boolean {
+  const s = `${String(msg)} ${err?.message ?? ''}`;
+  if (/ResizeObserver loop/i.test(s)) return true;
+  if (String(msg) === 'Script error.') return true; // cross-origin, no detail
   return false;
 }
 
@@ -67,36 +77,62 @@ function safeReload() {
 
 window.onerror = (_msg, _src, _line, _col, error) => {
   if (isChunkLoadError(_msg, error)) { safeReload(); return true; }
-  showOverlay('Error en la app', error ? `${error.name}: ${error.message}\n\n${error.stack ?? ''}` : String(_msg));
-  return true;
+  // Non-fatal window errors (extensions, ResizeObserver, stray rejections)
+  // must not blank the app with a full-screen overlay — just log them.
+  console.error('window.onerror:', _msg, error);
+  return false;
 };
 
 window.addEventListener('unhandledrejection', (e) => {
   const err = e.reason;
   if (isChunkLoadError(err?.message, err instanceof Error ? err : null)) { safeReload(); return; }
-  const detail = err instanceof Error
-    ? `${err.name}: ${err.message}\n\n${err.stack ?? ''}`
-    : JSON.stringify(err, null, 2);
-  showOverlay('Error sin capturar', detail);
+  if (isBenignError(err?.message, err instanceof Error ? err : null)) return;
+  // Log unhandled rejections but don't hijack the whole screen; the React
+  // ErrorBoundary handles genuine render failures with a recoverable UI.
+  console.error('unhandledrejection:', err);
 });
 
 // ── React error boundary ──────────────────────────────────────────────────────
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  { error: Error | null; componentStack: string }
+  { error: Error | null }
 > {
-  state = { error: null, componentStack: '' };
+  state = { error: null as Error | null };
   static getDerivedStateFromError(e: Error) { return { error: e }; }
   componentDidCatch(e: Error, info: React.ErrorInfo) {
-    // info.componentStack shows exactly which component caused the error
-    this.setState({ componentStack: info.componentStack ?? '' });
-    showOverlay(
-      'Error de renderizado',
-      `${e.name}: ${e.message}\n\nComponente:\n${info.componentStack ?? ''}\n\nStack:\n${e.stack ?? ''}`,
-    );
+    // Log for diagnostics; do NOT paint the global overlay — render a
+    // recoverable fallback instead so one bad screen doesn't nuke the app.
+    console.error('Render error:', e, info.componentStack);
   }
   render() {
-    if (this.state.error) return null;
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight:'100vh', background:'#0A0C0F', color:'#F7F9FC',
+          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+          padding:24, gap:16, fontFamily:'system-ui,sans-serif', textAlign:'center' }}>
+          <div style={{ fontSize:44 }}>⚠️</div>
+          <div style={{ fontSize:18, fontWeight:700 }}>Algo salió mal</div>
+          <div style={{ fontSize:13, color:'#94A3B8', maxWidth:320 }}>
+            Ocurrió un error al mostrar esta pantalla. Puedes reintentar sin perder tu sesión.
+          </div>
+          <div style={{ display:'flex', gap:10 }}>
+            <button
+              onClick={() => this.setState({ error: null })}
+              style={{ padding:'12px 22px', borderRadius:12, border:'none',
+                background:'linear-gradient(135deg,#31D67B,#22A85A)', color:'#062',
+                fontSize:14, fontWeight:700, cursor:'pointer' }}>
+              Reintentar
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              style={{ padding:'12px 22px', borderRadius:12, border:'1px solid #243650',
+                background:'transparent', color:'#94A3B8', fontSize:14, fontWeight:700, cursor:'pointer' }}>
+              Recargar
+            </button>
+          </div>
+        </div>
+      );
+    }
     return this.props.children;
   }
 }

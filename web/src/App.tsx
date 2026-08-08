@@ -103,19 +103,38 @@ export default function App() {
   const [lockEmail, setLockEmail] = useState('');
   const inactivityTimer           = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logoutTimer               = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showAddRef                = useRef(showAdd);
+  useEffect(() => { showAddRef.current = showAdd; }, [showAdd]);
+
+  // Remove every per-user local flag so the next account on a shared device
+  // doesn't inherit stale Gmail-connection / sync state.
+  function clearUserLocalState() {
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('nexo_')) localStorage.removeItem(k);
+    }
+  }
 
   const signOut = useCallback(async () => {
     setLocked(false);
+    clearUserLocalState();
     await supabase.auth.signOut();
     setUserId(null);
   }, []);
 
-  // Reset inactivity timer: lock after 1 min, auto-logout after 30 min
+  // Reset inactivity timer: lock after LOCK_MS, auto-logout after LOGOUT_MS.
   const resetTimer = useCallback(() => {
     if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
     if (logoutTimer.current) clearTimeout(logoutTimer.current);
-    inactivityTimer.current = setTimeout(() => setLocked(true), LOCK_MS);
-    logoutTimer.current     = setTimeout(signOut, LOGOUT_MS);
+    const armLock = () => {
+      inactivityTimer.current = setTimeout(() => {
+        // Never lock (and destroy an in-progress form) while the user is
+        // actively entering a transaction — reschedule instead.
+        if (showAddRef.current) { armLock(); return; }
+        setLocked(true);
+      }, LOCK_MS);
+    };
+    armLock();
+    logoutTimer.current = setTimeout(signOut, LOGOUT_MS);
   }, [signOut]);
 
   useEffect(() => {

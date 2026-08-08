@@ -66,10 +66,12 @@ const successHtml = (email: string, count: number, frontendUrl: string) => {
   </div>
   <script>
     function notify() {
+      var payload = { type: 'nexo_gmail_connected', email: ${emailJs}, count: ${countJs} };
+      var allowed = ['https://oriafintech.com','https://www.oriafintech.com','http://localhost:5173'];
       if (window.opener && !window.opener.closed) {
-        const allowed = ['https://oriafintech.com','https://www.oriafintech.com','http://localhost:5173'];
-        const target  = allowed.includes(window.opener.location.origin) ? window.opener.location.origin : allowed[0];
-        window.opener.postMessage({ type: 'nexo_gmail_connected', email: ${emailJs}, count: ${countJs} }, target);
+        // Never read window.opener.location.origin (cross-origin → SecurityError).
+        // Post to each allowed origin; only the matching parent receives it.
+        allowed.forEach(function(o) { try { window.opener.postMessage(payload, o); } catch (e) {} });
         window.close();
       } else {
         window.location.href = ${urlJs} + '?gmail=connected&email=' + encodeURIComponent(${emailJs}) + '&count=' + ${countJs};

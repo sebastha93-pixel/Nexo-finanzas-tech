@@ -463,6 +463,12 @@ export function SettingsScreen({ userId }: { userId: string }) {
             setGmailConnected(true);
             localStorage.setItem('nexo_gmail_connected', '1');
             setLastSync(d.lastSync ? new Date(d.lastSync).toLocaleTimeString('es-CO', { hour:'2-digit', minute:'2-digit' }) : null);
+          } else {
+            // Backend says not connected (revoked / different user) — clear any
+            // stale local flag so the UI doesn't keep showing "conectado".
+            setGmailConnected(false);
+            localStorage.removeItem('nexo_gmail_connected');
+            localStorage.removeItem('nexo_gmail_email');
           }
         })
         .catch(() => {/* silent */});
@@ -483,15 +489,22 @@ export function SettingsScreen({ userId }: { userId: string }) {
       if (em) localStorage.setItem('nexo_gmail_email', em);
       setGmailCount(Number(params.get('count') ?? 0));
       setLastSync(new Date().toLocaleTimeString('es-CO', { hour:'2-digit', minute:'2-digit' }));
+      // Kick off the authoritative backend sync without a reload.
+      window.dispatchEvent(new Event('oria:gmail-connected'));
       // Clean URL without reloading
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
-  // Listen for postMessage from the Railway OAuth popup (desktop)
+  // Listen for postMessage from the Railway OAuth popup (desktop).
   useEffect(() => {
+    // The OAuth callback page is served by the API (Railway) origin, so accept
+    // messages from the app origin OR the API origin — nothing else.
+    let apiOrigin = '';
+    try { apiOrigin = new URL(RAILWAY_API).origin; } catch { /* noop */ }
+
     function onMessage(e: MessageEvent) {
-      if (e.origin !== window.location.origin) return;
+      if (e.origin !== window.location.origin && e.origin !== apiOrigin) return;
       if (e.data?.type === 'nexo_gmail_connected') {
         setGmailConnected(true);
         localStorage.setItem('nexo_gmail_connected', '1');
@@ -501,6 +514,7 @@ export function SettingsScreen({ userId }: { userId: string }) {
         setGmailCount(e.data.count ?? 0);
         setGmailLoading(false);
         setLastSync(new Date().toLocaleTimeString('es-CO', { hour:'2-digit', minute:'2-digit' }));
+        window.dispatchEvent(new Event('oria:gmail-connected'));
       }
     }
     window.addEventListener('message', onMessage);
@@ -552,123 +566,28 @@ export function SettingsScreen({ userId }: { userId: string }) {
     }
     setSyncing(true);
     try {
-      // Step 1: Fetch raw emails from backend (authenticated) + load rules
-      const [headers, rules] = await Promise.all([
-        getAuthHeaders(),
-        fetchCategoryRules(userId),
-      ]);
-      const emailsRes = await fetch(`${RAILWAY_API}/email-sync/fetch-emails`, { headers });
+      // The BACKEND is the single authoritative importer: it parses the bank
+      // emails, validates account ownership + cutoff, and inserts. The client
+      // no longer parses/inserts (removes the frontend/backend parser race).
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${RAILWAY_API}/email-sync/sync`, { method: 'POST', headers });
 
-      if (!emailsRes.ok) {
-        const body = await emailsRes.text().catch(() => '');
-        if (emailsRes.status === 401 || body.includes('token refresh failed') || body.includes('reconnect')) {
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        if (res.status === 401 || body.includes('token refresh failed') || body.includes('reconnect')) {
           setGmailConnected(false);
           localStorage.removeItem('nexo_gmail_connected');
           localStorage.removeItem('nexo_gmail_email');
           throw new Error('Tu sesión de Gmail expiró. Reconecta tu cuenta con el botón de abajo.');
         }
-        throw new Error(`HTTP ${emailsRes.status}: ${body.slice(0, 120)}`);
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      const rawEmails = await emailsRes.json() as unknown;
-      if (!Array.isArray(rawEmails)) throw new Error('Respuesta inesperada del servidor de correo. Reconecta Gmail si el problema persiste.');
-      const emails = (rawEmails as { messageId: string; bank: string; subject: string; body: string; date: string }[])
-        .filter(e => e && typeof e.messageId === 'string' && typeof e.bank === 'string');
-
-      // Parse emails — try to link to registered accounts but import regardless
-      const registeredAccounts = accounts.filter(a => a.account_suffix);
-
-      // Momento 0: single source of truth from gmailSync utility
-      const globalCutoff = computeGlobalCutoff(accounts);
-
-      type ParsedTxn = ReturnType<typeof parseEmail> & { messageId: string; date: string; account_id?: string };
-      const parsed: NonNullable<ParsedTxn>[] = [];
-      let cNoParse = 0, cLinked = 0, cUnlinked = 0, cBeforeCutoff = 0;
-
-      for (const email of emails) {
-        const result = parseEmail(email.bank, email.body, email.subject);
-        if (!result || result.amount <= 0) { cNoParse++; continue; }
-
-        // Comparar timestamp completo del correo vs momento 0 (fecha + hora)
-        const emailTs = email.date;
-
-        // Try to match a registered account (best-effort — does NOT block import)
-        let account_id: string | undefined;
-        const matchedAccount = registeredAccounts.find(a => {
-          if (email.bank === 'nequi') return !!a.institution?.toLowerCase().includes('nequi');
-          if (!result.accountSuffix || a.account_suffix !== result.accountSuffix) return false;
-          return !!a.institution?.toLowerCase().includes(email.bank);
-        });
-
-        if (matchedAccount) {
-          const holderOk =
-            !matchedAccount.account_holder ||
-            !result.accountHolder ||
-            holderNamesMatch(matchedAccount.account_holder, result.accountHolder);
-
-          if (holderOk) {
-            account_id = matchedAccount.id; cLinked++;
-            const acctCutoff = matchedAccount.initial_balance_set_at;
-            if (acctCutoff && new Date(emailTs) < new Date(acctCutoff)) { cBeforeCutoff++; continue; }
-          } else {
-            // Holder mismatch: use global cutoff, not matched account's
-            cUnlinked++;
-            if (globalCutoff && new Date(emailTs) < new Date(globalCutoff)) { cBeforeCutoff++; continue; }
-          }
-        } else {
-          if (globalCutoff && new Date(emailTs) < new Date(globalCutoff)) { cBeforeCutoff++; continue; }
-          cUnlinked++;
-        }
-
-        const category = applyRules(result, rules);
-        parsed.push({ ...result, category, messageId: email.messageId, date: email.date, account_id });
-      }
-
-      const time = new Date().toLocaleTimeString('es-CO', { hour:'2-digit', minute:'2-digit' });
-
-      if (parsed.length === 0) {
-        const cutoffInfo = cBeforeCutoff > 0 ? ` · ${cBeforeCutoff} anteriores al momento 0` : '';
-        setLastSync(`${time} · ${emails.length} correos · ${cNoParse} sin parsear${cutoffInfo} · sin movimientos nuevos`);
-        return;
-      }
-      // Step 3: Insert via Supabase JS — parallel to avoid N×roundtrip latency
-      const upsertErrors: string[] = [];
-      const insertResults = await Promise.all(parsed.map(async txn => {
-        const meta: Record<string, string> = {};
-        if (txn.merchant)        meta.merchant         = txn.merchant;
-        if (txn.recipientName)   meta.recipient_name   = txn.recipientName;
-        if (txn.recipientSuffix) meta.recipient_suffix = txn.recipientSuffix;
-        if (txn.transactionTime) meta.time             = txn.transactionTime;
-
-        const { error } = await supabase.from('transactions').insert({
-          user_id: userId,
-          transaction_type: txn.type,
-          amount: Math.min(txn.amount, 999_999_999_999),
-          description: txn.description,
-          category: txn.category,
-          date: txn.date.slice(0, 10),
-          gmail_message_id: txn.messageId,
-          currency_code: 'COP',
-          notes: [
-            'Auto-importado',
-            txn.transactionTime   ? `Hora: ${txn.transactionTime}` : null,
-            txn.recipientName     ? `Destinatario: ${txn.recipientName}` : null,
-            txn.recipientSuffix   ? `Cuenta destino: *${txn.recipientSuffix}` : null,
-          ].filter(Boolean).join(' · '),
-          ...(Object.keys(meta).length ? { metadata: meta } : {}),
-          ...(txn.account_id ? { account_id: txn.account_id } : {}),
-        });
-        if (!error) return true;
-        if (error.code !== '23505') upsertErrors.push(error.message.slice(0, 60));
-        return false;
-      }));
-      const created = insertResults.filter(Boolean).length;
-
+      const result = (await res.json()) as { transactionsCreated?: number; emailsProcessed?: number };
+      const created = result.transactionsCreated ?? 0;
+      const time = new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
       setGmailCount(prev => prev + created);
-      const errStr = upsertErrors.length > 0 ? ` ⚠️ ${upsertErrors[0]}` : '';
-      const linkInfo = cLinked > 0 ? ` · ${cLinked} vinculados` : cUnlinked > 0 ? ` · ${cUnlinked} sin cuenta` : '';
-      const cutoffStr = cBeforeCutoff > 0 ? ` · ${cBeforeCutoff} omitidos (antes del momento 0)` : '';
-      setLastSync(`${time} · ${emails.length} correos / ${parsed.length} parseados / ${created} nuevos${linkInfo}${cutoffStr}${errStr}`);
+      setLastSync(`${time} · ${created} movimiento${created !== 1 ? 's' : ''} nuevo${created !== 1 ? 's' : ''}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastSync(`⚠️ ${msg.slice(0, 120)}`);
