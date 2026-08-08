@@ -14,6 +14,9 @@ import { SyncToast }            from './components/SyncToast';
 import { supabase }             from './lib/supabase';
 import { useAutoGmailSync }     from './hooks/useAutoGmailSync';
 import { C }                    from './theme';
+import { Capacitor }            from '@capacitor/core';
+import { App as CapApp }        from '@capacitor/app';
+import { Browser }              from '@capacitor/browser';
 
 type Screen = 'dashboard' | 'patrimony' | 'transactions' | 'goals' | 'ai' | 'settings';
 
@@ -146,6 +149,25 @@ export default function App() {
       setUserId(session?.user.id ?? null);
     });
     return () => subscription.unsubscribe();
+  }, []);
+
+  // Native deep-link return from the Gmail OAuth flow
+  // (com.nexofinanzas.app://gmail-connected?email=…&count=…).
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const handle = CapApp.addListener('appUrlOpen', ({ url }) => {
+      if (!url.includes('gmail-connected')) return;
+      try {
+        const u = new URL(url);
+        const email = u.searchParams.get('email') ?? '';
+        const count = Number(u.searchParams.get('count') ?? 0);
+        localStorage.setItem('nexo_gmail_connected', '1');
+        if (email) localStorage.setItem('nexo_gmail_email', email);
+        window.dispatchEvent(new CustomEvent('oria:gmail-connected', { detail: { email, count } }));
+      } catch { /* ignore malformed deep link */ }
+      Browser.close().catch(() => {});
+    });
+    return () => { handle.then(h => h.remove()).catch(() => {}); };
   }, []);
 
   // Auto-logout on inactivity — only while authenticated

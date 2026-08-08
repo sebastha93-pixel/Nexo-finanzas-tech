@@ -5,6 +5,8 @@ import { parseEmail } from '../lib/emailParsers';
 import { computeGlobalCutoff, holderNamesMatch, getAuthHeaders } from '../lib/gmailSync';
 import { fetchCategoryRules, applyRules } from '../lib/categoryRules';
 import { BankLogo } from '../components/BankLogo';
+import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
 
 const RAILWAY_API = import.meta.env.VITE_API_URL as string ?? 'https://nexo-finanzas-tech-production.up.railway.app/api/v1';
 
@@ -521,6 +523,22 @@ export function SettingsScreen({ userId }: { userId: string }) {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
+  // Reflect a Gmail connection that arrived via the native deep link (App.tsx
+  // dispatches 'oria:gmail-connected' with the email/count in event.detail).
+  useEffect(() => {
+    function onConnected(e: Event) {
+      const detail = (e as CustomEvent).detail as { email?: string; count?: number } | undefined;
+      setGmailConnected(true);
+      localStorage.setItem('nexo_gmail_connected', '1');
+      if (detail?.email) { setGmailEmail(detail.email); localStorage.setItem('nexo_gmail_email', detail.email); }
+      if (typeof detail?.count === 'number') setGmailCount(detail.count);
+      setGmailLoading(false);
+      setLastSync(new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }));
+    }
+    window.addEventListener('oria:gmail-connected', onConnected);
+    return () => window.removeEventListener('oria:gmail-connected', onConnected);
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -611,9 +629,21 @@ export function SettingsScreen({ userId }: { userId: string }) {
     try {
       // Auth header lets the backend derive + sign the OAuth state from the
       // authenticated user. The client no longer supplies its own identity.
+      const native = Capacitor.isNativePlatform();
       const headers = await getAuthHeaders();
-      const res = await fetch(`${RAILWAY_API}/email-sync/auth/google`, { headers });
+      const res = await fetch(
+        `${RAILWAY_API}/email-sync/auth/google${native ? '?platform=native' : ''}`,
+        { headers },
+      );
       const data = await res.json() as { url: string };
+
+      if (native) {
+        // Native: open consent in the system browser (proven OAuth pattern).
+        // The return arrives via the app's deep link, handled in App.tsx.
+        await Browser.open({ url: data.url });
+        setGmailLoading(false);
+        return;
+      }
 
       const popup = window.open(data.url, 'nexo_gmail', 'width=520,height=660,left=400,top=100,toolbar=no,menubar=no');
       if (!popup || popup.closed) {

@@ -37,32 +37,51 @@ npm run cap:sync
 En Android Studio: **Build > Generate Signed Bundle/APK** (AAB para Play Store).
 En Xcode: selecciona el equipo de firma y **Product > Archive** para App Store.
 
-## ⚠️ Lo único que requiere adaptación de código: OAuth de Gmail
-El flujo actual abre un **popup** (`window.open`) y recibe la respuesta por
-`postMessage`. En un webview nativo eso no funciona. Hay que:
+## OAuth de Gmail en nativo — ✅ código implementado
+La adaptación ya está en el código (usa el patrón probado navegador-del-sistema
++ deep link):
 
-1. **Abrir el consentimiento en el navegador del sistema** con `@capacitor/browser`
-   en vez de `window.open`, detectando plataforma con `Capacitor.isNativePlatform()`.
-2. **Volver a la app por deep link**: registrar un esquema propio
-   (`com.nexofinanzas.app://gmail-connected`) y escuchar con `@capacitor/app`:
-   ```ts
-   import { App } from '@capacitor/app';
-   App.addListener('appUrlOpen', ({ url }) => {
-     if (url.includes('gmail-connected')) {
-       // marcar conectado y disparar el evento 'oria:gmail-connected'
-     }
-   });
-   ```
-3. **Backend**: cuando el flujo sea nativo, el callback
-   (`/email-sync/auth/callback`) debe **redirigir** a
-   `com.nexofinanzas.app://gmail-connected?...` en vez de servir el HTML con
-   `postMessage`. Se puede señalizar el modo nativo dentro del `state` firmado.
-4. Registrar el esquema en `web/ios/App/App/Info.plist` (CFBundleURLTypes) y en
-   `web/android/app/src/main/AndroidManifest.xml` (intent-filter).
+- **Frontend** (`SettingsScreen.connectGmail`): si `Capacitor.isNativePlatform()`,
+  pide la URL con `?platform=native` y la abre con `@capacitor/browser`.
+- **Retorno por deep link** (`App.tsx`): escucha `appUrlOpen` de `@capacitor/app`,
+  captura `com.nexofinanzas.app://gmail-connected?email=…&count=…`, marca
+  conectado, cierra el navegador y dispara el sync del backend.
+- **Backend** (`/email-sync/auth/google` + `/callback`): el `platform` va firmado
+  dentro del `state` HMAC; el callback redirige al deep link en nativo y sirve el
+  HTML normal en web.
 
-Mientras no se haga esto, **todo lo demás funciona en nativo** (registro manual
-de movimientos, patrimonio, metas, chat IA, ajustes); solo la conexión de Gmail
-queda pendiente de esta adaptación.
+### Lo único que falta (en los proyectos nativos, tras `cap add`)
+Registrar el esquema `com.nexofinanzas.app` para que el SO reabra la app:
+
+**iOS — `web/ios/App/App/Info.plist`:**
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLSchemes</key>
+    <array><string>com.nexofinanzas.app</string></array>
+  </dict>
+</array>
+```
+
+**Android — `web/android/app/src/main/AndroidManifest.xml`** (dentro del
+`<activity>` principal):
+```xml
+<intent-filter>
+  <action android:name="android.intent.action.VIEW" />
+  <category android:name="android.intent.category.DEFAULT" />
+  <category android:name="android.intent.category.BROWSABLE" />
+  <data android:scheme="com.nexofinanzas.app" android:host="gmail-connected" />
+</intent-filter>
+```
+
+> Nota: **no** hay que tocar Google Cloud. Google sigue redirigiendo al callback
+> **web** del backend (`GOOGLE_REDIRECT_URI`, ya autorizado); ese callback es el
+> que rebota al esquema `com.nexofinanzas.app://` para reabrir la app. El esquema
+> no es un redirect URI de Google.
+
+Todo lo demás ya funciona en nativo (registro manual, patrimonio, metas, chat
+IA, ajustes).
 
 ## Recomendado antes de publicar
 - **Biometría** para desbloqueo: `@capacitor-community/biometric-auth` o

@@ -83,6 +83,35 @@ const successHtml = (email: string, count: number, frontendUrl: string) => {
 </html>`;
 };
 
+// Native app return: bounce to the app's custom-scheme deep link. The app
+// listens via @capacitor/app appUrlOpen and marks Gmail connected.
+const APP_SCHEME = 'com.nexofinanzas.app';
+const nativeRedirectHtml = (email: string, count: number) => {
+  const deepLink = `${APP_SCHEME}://gmail-connected?email=${encodeURIComponent(email)}&count=${count}`;
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gmail Conectado – ORIA</title>
+  <style>
+    body { margin:0; font-family:-apple-system,sans-serif; background:#070B14; color:#fff; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .card { text-align:center; padding:32px; }
+    a { color:#31D67B; font-weight:700; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div style="font-size:56px">✅</div>
+    <h2>Gmail conectado</h2>
+    <p>Volviendo a ORIA…</p>
+    <p><a href="${deepLink}">Abrir ORIA</a></p>
+  </div>
+  <script>window.location.href = ${jsString(deepLink)};</script>
+</body>
+</html>`;
+};
+
 const errorHtml = (msg: string) => `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -119,11 +148,16 @@ export class EmailSyncController {
   @ApiOperation({ summary: 'Get Google OAuth authorization URL' })
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  getAuthUrl(@CurrentUser() user: User): { url: string } {
+  getAuthUrl(
+    @CurrentUser() user: User,
+    @Query('platform') platform?: string,
+  ): { url: string } {
     // The state is derived server-side from the authenticated user and signed.
     // Client-supplied state is ignored — this prevents binding another user's
-    // Gmail to this account (or vice-versa).
-    const state = this.emailSyncService.createSignedState(user.id);
+    // Gmail to this account (or vice-versa). `platform` is signed into the state
+    // so the callback knows whether to return HTML (web) or a deep link (native).
+    const plat = platform === 'native' ? 'native' : 'web';
+    const state = this.emailSyncService.createSignedState(user.id, plat);
     const url = this.emailSyncService.getAuthUrl(state);
     return { url };
   }
@@ -149,8 +183,9 @@ export class EmailSyncController {
     // Recover the real user id from the signed state. A forged/expired/tampered
     // state is rejected here — the callback never trusts state as an identity.
     let userId: string;
+    let platform: 'web' | 'native';
     try {
-      userId = this.emailSyncService.verifySignedState(state);
+      ({ uid: userId, platform } = this.emailSyncService.verifySignedState(state));
     } catch {
       return errorHtml('La sesión de conexión expiró o es inválida. Intenta conectar de nuevo.');
     }
@@ -174,6 +209,11 @@ export class EmailSyncController {
         this.logger.warn(`Backfill failed for user ${userId}: ${String(e)}`);
       });
 
+      // Native app: return to the app via its custom-scheme deep link.
+      // Web: serve the HTML page that notifies the opener / redirects.
+      if (platform === 'native') {
+        return nativeRedirectHtml(email, transactionsCreated);
+      }
       const frontendUrl = this.emailSyncService.getFrontendUrl();
       return successHtml(email, transactionsCreated, frontendUrl);
     } catch (err) {

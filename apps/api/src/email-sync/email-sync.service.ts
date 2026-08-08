@@ -133,15 +133,15 @@ export class EmailSyncService {
    * The callback can recover the real uid only by verifying the HMAC, so a
    * client can never substitute another user's id (the C-1 fix).
    */
-  createSignedState(userId: string): string {
-    const payload = JSON.stringify({ uid: userId, exp: Date.now() + EmailSyncService.STATE_TTL_MS });
+  createSignedState(userId: string, platform: 'web' | 'native' = 'web'): string {
+    const payload = JSON.stringify({ uid: userId, plat: platform, exp: Date.now() + EmailSyncService.STATE_TTL_MS });
     const body = Buffer.from(payload, 'utf-8').toString('base64url');
     const sig = createHmac('sha256', this.stateSecret).update(body).digest('base64url');
     return `${body}.${sig}`;
   }
 
-  /** Verify a signed state and return the bound user id, or throw. */
-  verifySignedState(state: string): string {
+  /** Verify a signed state and return the bound user id + platform, or throw. */
+  verifySignedState(state: string): { uid: string; platform: 'web' | 'native' } {
     const dot = state.lastIndexOf('.');
     if (dot <= 0) throw new BadRequestException('Estado OAuth inválido.');
     const body = state.slice(0, dot);
@@ -152,16 +152,16 @@ export class EmailSyncService {
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
       throw new BadRequestException('Firma de estado OAuth inválida.');
     }
-    let parsed: { uid?: string; exp?: number };
+    let parsed: { uid?: string; exp?: number; plat?: string };
     try {
-      parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf-8')) as { uid?: string; exp?: number };
+      parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf-8')) as { uid?: string; exp?: number; plat?: string };
     } catch {
       throw new BadRequestException('Estado OAuth corrupto.');
     }
     if (!parsed.uid || !parsed.exp || Date.now() > parsed.exp) {
       throw new BadRequestException('El estado OAuth expiró. Intenta conectar de nuevo.');
     }
-    return parsed.uid;
+    return { uid: parsed.uid, platform: parsed.plat === 'native' ? 'native' : 'web' };
   }
 
   getAuthUrl(state: string): string {
