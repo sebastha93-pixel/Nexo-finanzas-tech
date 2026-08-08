@@ -1,8 +1,30 @@
 import { ParsedTransaction } from './bancolombia.parser';
 
 function parseColombianAmount(raw: string): number {
-  // Nequi often uses formats like $50.000 or 50000
-  return parseFloat(raw.replace(/\./g, '').replace(',', '.')) || 0;
+  // Colombian format: '.' = thousands separator, ',' = decimal separator.
+  // Do NOT blindly strip all dots — "$50.00" is 50, "$1.234" is 1234.
+  let s = raw.trim().replace(/\s/g, '');
+  if (s.includes(',')) {
+    // Comma present → it's the decimal separator; dots are thousands.
+    s = s.replace(/\./g, '').replace(',', '.');
+  } else {
+    const parts = s.split('.');
+    const last = parts[parts.length - 1];
+    // Strip dots only when they group thousands (3-digit trailing group,
+    // or more than one dot). A single dot with a non-3-digit tail is a decimal.
+    if (parts.length > 2 || (parts.length === 2 && last.length === 3)) {
+      s = s.replace(/\./g, '');
+    }
+  }
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Declined / promotional / informational alerts must never become transactions.
+function isNonTransactional(text: string): boolean {
+  return /declinad|rechazad|no autoriz|fondos insuficientes|no pudimos|no se pudo|intento de|gana(?:te)?\s|premio|sorteo|felicidades|promoci|beneficio|gratis|descuento|puntos|c[oó]digo de seguridad|token/i.test(
+    text,
+  );
 }
 
 function cleanName(raw: string): string {
@@ -14,6 +36,9 @@ function cleanName(raw: string): string {
 
 export function parse(emailBody: string, subject: string): ParsedTransaction | null {
   const text = emailBody + ' ' + subject;
+
+  // Ignore declined/promotional/security emails outright.
+  if (isNonTransactional(text)) return null;
 
   // "Enviaste $X a NOMBRE" → expense
   const enviasteMatch = text.match(
@@ -97,12 +122,18 @@ export function parse(emailBody: string, subject: string): ParsedTransaction | n
     };
   }
 
-  // Generic fallback for Nequi emails
+  // Generic fallback — only when the email clearly describes a money movement.
+  // Requiring an action verb prevents promos/balances ("¡Gana hasta $100.000!")
+  // from being imported as phantom transactions.
+  const hasActionVerb =
+    /recib|llegaron|llegó|llego|abon|pagaste|compraste|enviaste|retiraste|transferiste|consignaci/i.test(
+      text,
+    );
   const genericMatch = text.match(/\$?([\d]{1,3}(?:\.\d{3})+(?:,\d{1,2})?)/);
-  if (genericMatch && /nequi/i.test(text)) {
+  if (hasActionVerb && genericMatch && /nequi/i.test(text)) {
     const amount = parseColombianAmount(genericMatch[1]);
     if (amount > 0) {
-      const isIncome = /recib|llegaron|abono/i.test(text);
+      const isIncome = /recib|llegaron|llegó|llego|abon|consignaci/i.test(text);
       return {
         amount,
         type: isIncome ? 'income' : 'expense',

@@ -15,8 +15,15 @@ function parseAmount(raw: string): number {
     if (after.length === 3) return parseFloat(s.replace(/,/g, '')) || 0;
     return parseFloat(s.replace(',', '.')) || 0;
   }
-  // Colombian dot-thousands: "1.200.000"
-  return parseFloat(s.replace(/\./g, '')) || 0;
+  // Dot only: thousands separator ("1.200.000") vs decimal ("50.00").
+  {
+    const parts = s.split('.');
+    const last = parts[parts.length - 1];
+    if (parts.length > 2 || (parts.length === 2 && last.length === 3)) {
+      return parseFloat(s.replace(/\./g, '')) || 0;
+    }
+    return parseFloat(s) || 0;
+  }
 }
 
 function inferCategory(text: string): string {

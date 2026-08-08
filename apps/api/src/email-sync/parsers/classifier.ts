@@ -91,16 +91,55 @@ const INCOME_KEYWORDS = [
   'ingreso',
 ];
 
+// Unambiguous INCOME signals that must win even when a generic expense word
+// like "compra" or "débito" also appears (refunds, reversals, money received).
+// A refund email ("Te devolvimos $80.000 de tu compra") must NOT be an expense.
+const STRONG_INCOME_KEYWORDS = [
+  'te devolvimos',
+  'devolución',
+  'devolucion',
+  'reintegro',
+  'reverso',
+  'reversión',
+  'reversion',
+  'reversa',
+  'te llegó',
+  'te llego',
+  'te llegaron',
+  'transferencia recibida',
+  'recibiste una transferencia',
+  'recibiste un pago',
+  'recibiste una consignación',
+  'recibiste una consignacion',
+  'consignación',
+  'consignacion',
+  'abono pago de nomina',
+  'abono pago de nómina',
+  'abono por nomina',
+  'abono por nómina',
+  'nómina',
+  'nomina',
+  'salario',
+];
+
 export function classifyTransaction(
   text: string,
   clase?: string,
 ): 'income' | 'expense' {
   const lower = (text + ' ' + (clase ?? '')).toLowerCase();
 
+  // 1) Strong income signals win first (refunds/reversals/received money),
+  //    even if a generic expense keyword like "compra" is also present.
+  for (const kw of STRONG_INCOME_KEYWORDS) {
+    if (lower.includes(kw)) return 'income';
+  }
+
+  // 2) Expense signals.
   for (const kw of EXPENSE_KEYWORDS) {
     if (lower.includes(kw)) return 'expense';
   }
 
+  // 3) Remaining income signals.
   for (const kw of INCOME_KEYWORDS) {
     if (lower.includes(kw)) return 'income';
   }

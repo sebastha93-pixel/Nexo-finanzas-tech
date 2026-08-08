@@ -564,11 +564,15 @@ export class EmailSyncService {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // Full ISO timestamp for exact cutoff comparison
-    const emailTimestamp = message.internalDate
-      ? new Date(parseInt(message.internalDate, 10)).toISOString()
-      : parsed.date;
-    const emailDate = emailTimestamp.slice(0, 10);
+    // Exact instant of the email (epoch ms) for a reliable cutoff comparison.
+    const emailMs = message.internalDate
+      ? parseInt(message.internalDate, 10)
+      : new Date(parsed.date).getTime();
+    // Stored transaction date in the user's calendar (America/Bogota), NOT UTC —
+    // a purchase at 20:00 Bogota must not roll into the next day/month.
+    const emailDate = new Date(emailMs).toLocaleDateString('en-CA', {
+      timeZone: 'America/Bogota',
+    });
 
     // Only import transactions from the exact moment the initial balance was set.
     // If initial_balance_set_at is NULL the account is not ready yet — block all imports.
@@ -577,8 +581,10 @@ export class EmailSyncService {
       this.logger.debug(`Account for message ${messageId} has no initial balance set yet, skipping`);
       return false;
     }
-    if (emailTimestamp < cutoffAt) {
-      this.logger.debug(`Message ${messageId} (${emailTimestamp}) is before initial balance cutoff (${cutoffAt}), skipping`);
+    // Compare as instants, not as strings — TIMESTAMPTZ serializations differ in
+    // format/offset and lexical comparison is unreliable.
+    if (emailMs < new Date(cutoffAt).getTime()) {
+      this.logger.debug(`Message ${messageId} is before initial balance cutoff, skipping`);
       return false;
     }
 
