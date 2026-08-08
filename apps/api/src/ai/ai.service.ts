@@ -51,17 +51,28 @@ export class AiService {
       { role: 'user', content: dto.message },
     ];
 
-    const response = await this.anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages,
-    });
-
-    const reply =
-      response.content[0]?.type === 'text'
-        ? response.content[0].text
-        : 'Lo siento, no pude procesar tu consulta.';
+    let reply: string;
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages,
+      });
+      reply =
+        response.content[0]?.type === 'text'
+          ? response.content[0].text
+          : 'Lo siento, no pude procesar tu consulta.';
+    } catch (err) {
+      // Never surface a 500 with provider internals — return a friendly message.
+      // eslint-disable-next-line no-console
+      console.error('AI chat error:', err instanceof Error ? err.message : err);
+      return {
+        reply: 'La asesora no está disponible en este momento. Intenta de nuevo en un momento.',
+        conversation_id: conversationId,
+        suggestions: this.generateSuggestions(context),
+      };
+    }
 
     const updatedMessages = [
       ...existingMessages,
@@ -251,7 +262,7 @@ export class AiService {
         ? context.active_goals
             .map(
               g =>
-                `  • ${g.name}: ${fmt(Number(g.current_amount))} de ${fmt(Number(g.target_amount))} (${Math.round((Number(g.current_amount) / Number(g.target_amount)) * 100)}%)`,
+                `  • ${g.name}: ${fmt(Number(g.current_amount))} de ${fmt(Number(g.target_amount))} (${Number(g.target_amount) > 0 ? Math.round((Number(g.current_amount) / Number(g.target_amount)) * 100) : 0}%)`,
             )
             .join('\n')
         : '  Sin metas activas';

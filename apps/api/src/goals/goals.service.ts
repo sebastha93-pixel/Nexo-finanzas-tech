@@ -56,14 +56,36 @@ export class GoalsService {
 
   async addContribution(userId: string, goalId: string, dto: AddContributionDto) {
     const goal = await this.findOne(userId, goalId);
-    const newAmount = Number(goal.current_amount) + Number(dto.amount);
 
-    await this.supabase.from('goal_contributions').insert({ ...dto, goal_id: goalId, user_id: userId });
-    const { data } = await this.supabase.from('goals').update({
-      current_amount: newAmount,
-      status: newAmount >= goal.target_amount ? 'completed' : 'active',
-    }).eq('id', goalId).eq('user_id', userId).select().single();
+    const { error: insErr } = await this.supabase
+      .from('goal_contributions')
+      .insert({ ...dto, goal_id: goalId, user_id: userId });
+    if (insErr) throw new Error(insErr.message);
 
+    // Recompute current_amount from the authoritative sum of contributions
+    // instead of a stale read-modify-write — self-correcting and safe under
+    // concurrent contributions (both rows are counted regardless of order).
+    const { data: contribs } = await this.supabase
+      .from('goal_contributions')
+      .select('amount')
+      .eq('goal_id', goalId)
+      .eq('user_id', userId);
+    const total = (contribs ?? []).reduce((s, c) => s + Number(c.amount), 0);
+
+    const patch: Record<string, unknown> = { current_amount: total };
+    // Only auto-complete an active goal; never resurrect a paused/cancelled one.
+    if (goal.status === 'active' && total >= Number(goal.target_amount)) {
+      patch.status = 'completed';
+    }
+
+    const { data, error } = await this.supabase
+      .from('goals')
+      .update(patch)
+      .eq('id', goalId)
+      .eq('user_id', userId)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
     return data;
   }
 
