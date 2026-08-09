@@ -24,7 +24,13 @@ function parseAmount(raw: string): number {
     if (after.length === 3) return parseFloat(s.replace(/,/g, '')) || 0;
     return parseFloat(s.replace(',', '.')) || 0;
   }
-  return parseFloat(s.replace(/\./g, '')) || 0;
+  // Only dots: if last segment has exactly 3 digits, all dots are thousands separators
+  // Otherwise the last dot is a decimal separator ('1.5' → 1.5, '50.00' → 50, '1.234' → 1234)
+  const parts = s.split('.');
+  const last = parts[parts.length - 1] ?? '';
+  if (parts.length > 2 || (parts.length === 2 && last.length === 3))
+    return parseFloat(s.replace(/\./g, '')) || 0;
+  return parseFloat(s) || 0;
 }
 
 function inferCategory(text: string): string {
@@ -324,6 +330,16 @@ function parseBancolombia(body: string, subject: string): ParsedEmail | null {
     return { amount, type: 'income', description: 'Depósito · Bancolombia', category: 'Transferencias', accountSuffix, accountHolder };
   }
 
+  // "Recibiste una transferencia por $X de SENDER en tu cuenta *SUFFIX"
+  const recibisteTransPorMatch = text.match(
+    /[Rr]ecibiste\s+una\s+transferencia\s+por\s+\$?\s*([\d.,]+)(?:\s+de\s+([\w\sáéíóúÁÉÍÓÚñÑ]+?)(?:\s+en\s+tu|\s+a\s|\s+el\s+d[ií]a|[.,\n\r]|$))?/i,
+  );
+  if (recibisteTransPorMatch) {
+    const amount = parseAmount(recibisteTransPorMatch[1]);
+    const sender = recibisteTransPorMatch[2] ? cleanName(recibisteTransPorMatch[2]) : '';
+    return { amount, type: 'income', description: buildTransferDesc('in', 'Bancolombia', sender || undefined), category: 'Transferencias', merchant: sender || undefined, accountSuffix, accountHolder };
+  }
+
   const avanceMatch = text.match(/[Aa]vance\s+(?:en\s+)?cajero\s+(?:por\s+)?\$?\s*([\d.,]+)/);
   if (avanceMatch) {
     const amount = parseAmount(avanceMatch[1]);
@@ -364,6 +380,16 @@ function parseBancolombia(body: string, subject: string): ParsedEmail | null {
     const amount = parseAmount(recibisteTransMatch[1]);
     const sender = recibisteTransMatch[2] ? cleanName(recibisteTransMatch[2]) : '';
     return { amount, type: 'income', description: buildTransferDesc('in', 'Bancolombia', sender || undefined), category: 'Transferencias', merchant: sender || undefined, accountSuffix, accountHolder };
+  }
+
+  // "Recibiste un pago TIPO de SENDER por $X" — business/PSE payment received
+  const recibistePagoTipoMatch = text.match(
+    /[Rr]ecibiste\s+un\s+pago\s+[\w]+\s+de\s+([\w\sáéíóúÁÉÍÓÚñÑ&.\-]+?)\s+por\s+\$?\s*([\d.,]+)/i,
+  );
+  if (recibistePagoTipoMatch) {
+    const sender = cleanName(recibistePagoTipoMatch[1]);
+    const amount = parseAmount(recibistePagoTipoMatch[2]);
+    return { amount, type: 'income', description: sender ? `Pago recibido de ${sender} · Bancolombia` : 'Pago recibido · Bancolombia', category: 'Transferencias', merchant: sender || undefined, accountSuffix, accountHolder };
   }
 
   const recibistePagoMatch = text.match(

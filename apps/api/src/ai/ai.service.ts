@@ -23,6 +23,7 @@ export class AiService {
     const systemPrompt = this.buildSystemPrompt(context);
 
     let conversationId = dto.conversation_id;
+    let ownsConversation = false;
     let existingMessages: Array<{ role: string; content: string }> = [];
 
     if (conversationId) {
@@ -32,7 +33,14 @@ export class AiService {
         .eq('id', conversationId)
         .eq('user_id', userId)
         .single();
-      if (conv) existingMessages = conv.messages;
+      if (conv) {
+        existingMessages = conv.messages;
+        ownsConversation = true;
+      } else {
+        // Supplied a conversation id we don't own (or doesn't exist) — never
+        // write into it. Fall through to creating a fresh conversation.
+        conversationId = undefined;
+      }
     }
 
     const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
@@ -43,17 +51,28 @@ export class AiService {
       { role: 'user', content: dto.message },
     ];
 
-    const response = await this.anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages,
-    });
-
-    const reply =
-      response.content[0]?.type === 'text'
-        ? response.content[0].text
-        : 'Lo siento, no pude procesar tu consulta.';
+    let reply: string;
+    try {
+      const response = await this.anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages,
+      });
+      reply =
+        response.content[0]?.type === 'text'
+          ? response.content[0].text
+          : 'Lo siento, no pude procesar tu consulta.';
+    } catch (err) {
+      // Never surface a 500 with provider internals — return a friendly message.
+      // eslint-disable-next-line no-console
+      console.error('AI chat error:', err instanceof Error ? err.message : err);
+      return {
+        reply: 'La asesora no está disponible en este momento. Intenta de nuevo en un momento.',
+        conversation_id: conversationId,
+        suggestions: this.generateSuggestions(context),
+      };
+    }
 
     const updatedMessages = [
       ...existingMessages,
@@ -61,11 +80,12 @@ export class AiService {
       { role: 'assistant', content: reply, timestamp: new Date().toISOString() },
     ];
 
-    if (conversationId) {
+    if (conversationId && ownsConversation) {
       await this.supabase
         .from('ai_conversations')
         .update({ messages: updatedMessages })
-        .eq('id', conversationId);
+        .eq('id', conversationId)
+        .eq('user_id', userId);
     } else {
       const { data: newConv } = await this.supabase
         .from('ai_conversations')
@@ -242,7 +262,7 @@ export class AiService {
         ? context.active_goals
             .map(
               g =>
-                `  • ${g.name}: ${fmt(Number(g.current_amount))} de ${fmt(Number(g.target_amount))} (${Math.round((Number(g.current_amount) / Number(g.target_amount)) * 100)}%)`,
+                `  • ${g.name}: ${fmt(Number(g.current_amount))} de ${fmt(Number(g.target_amount))} (${Number(g.target_amount) > 0 ? Math.round((Number(g.current_amount) / Number(g.target_amount)) * 100) : 0}%)`,
             )
             .join('\n')
         : '  Sin metas activas';

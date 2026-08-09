@@ -17,7 +17,8 @@ export function TransactionRow({
   const isIncome   = transaction.transaction_type === 'income';
   const isTransfer = transaction.transaction_type === 'transfer';
 
-  const amountColor = isIncome ? Colors.success : isTransfer ? Colors.info : Colors.danger;
+  // ORIA: income = accent, expense = textPrimary (not red), transfer = textSecondary
+  const amountColor = isIncome ? Colors.accent : isTransfer ? Colors.textSecondary : Colors.textPrimary;
   const amountSign  = isIncome ? '+' : isTransfer ? '' : '-';
 
   const cat = transaction.category as { name: string; icon: string; color: string } | null;
@@ -61,16 +62,17 @@ export function TransactionRow({
 }
 
 const styles = StyleSheet.create({
+  // ORIA: exactly 56px row height, flat
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm + 2,
+    height: 56,
   },
   icon: {
-    width: 40, height: 40,
-    borderRadius: BorderRadius.md,
+    width: 36, height: 36,
+    borderRadius: 8,
     justifyContent: 'center', alignItems: 'center',
     flexShrink: 0,
   },
@@ -78,6 +80,11 @@ const styles = StyleSheet.create({
   desc: { color: Colors.textPrimary, fontSize: Typography.sm, fontWeight: Typography.medium },
   meta: { color: Colors.textMuted, fontSize: Typography.xs, marginTop: 2 },
   right: { alignItems: 'flex-end' },
-  amount: { fontSize: Typography.sm, fontWeight: Typography.bold },
+  amount: {
+    fontFamily: Typography.fontSansMedium,
+    fontWeight: '500' as const,
+    fontVariant: ['tabular-nums'] as const,
+    fontSize: Typography.sm,
+  },
   category: { color: Colors.textMuted, fontSize: Typography.xs, marginTop: 1 },
 });

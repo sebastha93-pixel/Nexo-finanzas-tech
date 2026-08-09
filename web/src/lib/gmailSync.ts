@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { parseEmail } from './emailParsers';
+import { fetchCategoryRules, applyRules } from './categoryRules';
 
 const API = (import.meta.env.VITE_API_URL as string | undefined)
   ?? 'https://nexo-finanzas-tech-production.up.railway.app/api/v1';
@@ -29,7 +30,7 @@ export function computeGlobalCutoff(accounts: Pick<SyncAccount, 'initial_balance
     .filter(a => a.initial_balance_set_at)
     .map(a => a.initial_balance_set_at!)
     .sort();
-  return dates.length ? dates[dates.length - 1] : null;
+  return dates.length ? dates[0] : null;  // oldest date = most permissive cutoff
 }
 
 // Use Date objects, not string comparison, to handle timezone-offset formats correctly
@@ -53,7 +54,10 @@ export async function runGmailSync(
   accounts: SyncAccount[],
 ): Promise<SyncResult> {
   if (accounts.length === 0) throw new Error('NO_ACCOUNTS');
-  const headers = await getAuthHeaders();
+  const [headers, rules] = await Promise.all([
+    getAuthHeaders(),
+    fetchCategoryRules(userId),
+  ]);
   const res = await fetch(`${API}/email-sync/fetch-emails`, { headers });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -111,11 +115,11 @@ export async function runGmailSync(
       if (globalCutoff && beforeCutoff(emailTs, globalCutoff)) continue;
     }
 
-    parsed.push({ ...result, messageId: email.messageId, date: email.date, account_id });
+    const category = applyRules(result, rules);
+    parsed.push({ ...result, category, messageId: email.messageId, date: email.date, account_id });
   }
 
-  let created = 0;
-  for (const txn of parsed) {
+  const insertResults = await Promise.all(parsed.map(async txn => {
     const meta: Record<string, string> = {};
     if (txn.merchant)        meta.merchant         = txn.merchant;
     if (txn.recipientName)   meta.recipient_name   = txn.recipientName;
@@ -140,13 +144,11 @@ export async function runGmailSync(
       ...(Object.keys(meta).length ? { metadata: meta } : {}),
       ...(txn.account_id ? { account_id: txn.account_id } : {}),
     });
-    if (!error) {
-      created++;
-    } else if (error.code !== '23505') {
-      // 23505 = duplicate key (already imported) — silently skip; log the rest
-      console.error('gmailSync insert error:', error.code, error.message);
-    }
-  }
+    if (!error) return true;
+    if (error.code !== '23505') console.error('gmailSync insert error:', error.code, error.message);
+    return false;
+  }));
+  const created = insertResults.filter(Boolean).length;
 
   return { created, emailCount: emails.length };
 }

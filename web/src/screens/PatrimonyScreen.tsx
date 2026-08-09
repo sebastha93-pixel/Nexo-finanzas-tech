@@ -41,16 +41,17 @@ export function PatrimonyScreen() {
 
   const firstVal  = m.history[0]?.value ?? m.netWorth;
   const growthPct = firstVal !== 0 ? ((m.netWorth - firstVal) / Math.abs(firstVal)) * 100 : 0;
-  const debitAccounts  = snap.accounts.filter(a => a.account_type !== 'credit_card');
-  const creditAccounts = snap.accounts.filter(a => a.account_type === 'credit_card');
+  const DEBT_TYPES = ['credit_card', 'loan'];
+  const debitAccounts  = snap.accounts.filter(a => !DEBT_TYPES.includes(a.account_type));
+  const creditAccounts = snap.accounts.filter(a => DEBT_TYPES.includes(a.account_type));
 
   return (
     <div style={{ paddingBottom: 'calc(100px + env(safe-area-inset-bottom))' }}>
 
       {/* ── HERO: patrimonio actual + evolución ── */}
       <div style={{ background: gradHero, padding: '48px 20px 0' }}>
-        <div style={{ color: C.text, fontSize: 22, fontWeight: 800 }}>Patrimonio</div>
-        <div style={{ color: C.textMuted, fontSize: 13, marginBottom: 20 }}>Tu riqueza, construyéndose</div>
+        <div style={{ color: C.text, fontSize: 22, fontWeight: 800 }}>Balance</div>
+        <div style={{ color: C.textMuted, fontSize: 13, marginBottom: 20 }}>Tu patrimonio neto en tiempo real</div>
 
         <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: 1 }}>PATRIMONIO NETO</div>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
@@ -60,7 +61,7 @@ export function PatrimonyScreen() {
           {m.history.length >= 2 && Math.abs(growthPct) >= 0.1 && (
             <span style={{
               color: growthPct >= 0 ? C.accent : C.danger, fontSize: 13, fontWeight: 700,
-              background: growthPct >= 0 ? 'rgba(49,214,123,0.12)' : 'rgba(239,68,68,0.12)',
+              background: growthPct >= 0 ? 'rgba(0,229,160,0.12)' : 'rgba(239,68,68,0.12)',
               borderRadius: 8, padding: '3px 8px',
             }}>
               {growthPct >= 0 ? '↑' : '↓'} {Math.abs(growthPct).toFixed(1)}%
@@ -98,11 +99,11 @@ export function PatrimonyScreen() {
           <div style={{ ...card }}>
             {debitAccounts.map((a, i) => (
               <AccountRow key={`d${i}`} institution={a.institution} suffix={a.account_suffix}
-                amount={Number(a.initial_balance ?? 0)} positive
+                amount={a.currentBalance} positive
                 divider={i > 0} />
             ))}
             {creditAccounts.map((a, i) => {
-              const debt  = Number(a.initial_balance ?? 0);
+              const debt  = a.currentBalance;
               const limit = Number(a.credit_limit ?? 0);
               const pct   = limit > 0 ? Math.min(100, Math.round((debt / limit) * 100)) : null;
               return (
@@ -141,8 +142,8 @@ export function PatrimonyScreen() {
 
         {/* ── Recomendación ORIA ── */}
         <div style={{
-          background: 'linear-gradient(135deg, rgba(49,214,123,0.10), rgba(59,130,246,0.08))',
-          border: '1px solid rgba(49,214,123,0.25)', borderRadius: 18, padding: 16,
+          background: 'linear-gradient(135deg, rgba(0,229,160,0.10), rgba(74,158,255,0.06))',
+          border: '1px solid rgba(0,229,160,0.25)', borderRadius: 18, padding: 16,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <span style={{ fontSize: 16 }}>🤖</span>

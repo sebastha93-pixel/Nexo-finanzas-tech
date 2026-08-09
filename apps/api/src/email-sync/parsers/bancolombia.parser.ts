@@ -26,8 +26,17 @@ function parseAmount(raw: string): number {
     if (after.length === 3) return parseFloat(s.replace(/,/g, '')) || 0;
     return parseFloat(s.replace(',', '.')) || 0;
   }
-  // Colombian dot-thousands: "1.200.000"
-  return parseFloat(s.replace(/\./g, '')) || 0;
+  // Dot only: thousands separator ("1.200.000") vs decimal ("50.00").
+  // Strip dots only when they group thousands (>1 dot, or a 3-digit tail);
+  // a single dot with a non-3-digit tail is a real decimal ("50.00" → 50).
+  {
+    const parts = s.split('.');
+    const last = parts[parts.length - 1];
+    if (parts.length > 2 || (parts.length === 2 && last.length === 3)) {
+      return parseFloat(s.replace(/\./g, '')) || 0;
+    }
+    return parseFloat(s) || 0;
+  }
 }
 
 function inferCategory(description: string, merchant?: string): string {
@@ -125,6 +134,12 @@ export function parse(emailBody: string, subject: string): ParsedTransaction | n
   }
 
   const text = emailBody + ' ' + subject;
+
+  // Declined / failed / security-code emails are not real transactions.
+  if (/declinad|rechazad|no autoriz|fondos insuficientes|no pudimos|no se pudo|transacci[oó]n\s+no\s+(?:exitosa|procesada)|intento\s+de\s+compra|clave\s+din[aá]mica|c[oó]digo\s+de\s+seguridad/i.test(text)) {
+    return null;
+  }
+
   const accountSuffix = extractBancolombiaAccountSuffix(text);
   const accountHolder = extractEmailHolder(text);
 
@@ -252,7 +267,10 @@ export function parse(emailBody: string, subject: string): ParsedTransaction | n
   const debitoMatch = text.match(
     /[Dd][eé]bito\s+(?:autom[aá]tico\s+)?(?:de\s+)?\$?\s*([\d.,]+)(?:\s+(?:de|a|en)\s+([\w\sáéíóúÁÉÍÓÚñÑ]+?)(?:\s+desde|\s+el\s+d[ií]a|[.,\n\r]|$))?/i,
   );
-  if (debitoMatch) {
+  // Only treat "débito" as an expense when there is no income signal in the
+  // email — otherwise phrases like "abonado a tu cuenta débito $X" in an
+  // income notification would be misclassified as an expense.
+  if (debitoMatch && !/te\s+lleg|recibiste|transferencia\s+recibida|consignaci|abono|dep[oó]sito|n[oó]mina|salario|reintegro|devoluci/i.test(text)) {
     const amount = parseAmount(debitoMatch[1]);
     const merchant = debitoMatch[2] ? cleanName(debitoMatch[2]) : '';
     return { amount, type: 'expense', description: merchant ? `Débito de ${merchant} · Bancolombia` : 'Débito · Bancolombia', category: merchant ? inferCategory(merchant) : 'Servicios', date: new Date().toISOString(), merchant: merchant || undefined, accountSuffix, accountHolder, rawText: text };

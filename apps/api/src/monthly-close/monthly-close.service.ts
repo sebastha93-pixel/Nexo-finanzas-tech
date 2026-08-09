@@ -27,19 +27,28 @@ export class MonthlyCloseService {
     const lastDay  = new Date(year, month, 0).toISOString().slice(0, 10);
     const errors: string[] = [];
 
-    // Get all users who have transactions
-    const { data: users, error: usersErr } = await this.supabase
-      .from('transactions')
-      .select('user_id')
-      .gte('date', firstDay)
-      .lte('date', lastDay);
-
-    if (usersErr || !users) {
-      this.logger.error(`Failed to fetch users for close: ${usersErr?.message}`);
-      return { processed: 0, errors: [usersErr?.message ?? 'Unknown error'] };
+    // Collect ALL distinct users with transactions this month. PostgREST caps
+    // a query at 1000 rows, so paginate until exhausted — otherwise users whose
+    // rows fall beyond the first page would silently get no monthly summary.
+    const userSet = new Set<string>();
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data: page, error: pageErr } = await this.supabase
+        .from('transactions')
+        .select('user_id')
+        .gte('date', firstDay)
+        .lte('date', lastDay)
+        .range(from, from + PAGE - 1);
+      if (pageErr) {
+        this.logger.error(`Failed to fetch users for close: ${pageErr.message}`);
+        return { processed: 0, errors: [pageErr.message] };
+      }
+      if (!page || page.length === 0) break;
+      for (const r of page) userSet.add(r.user_id as string);
+      if (page.length < PAGE) break;
     }
 
-    const uniqueUsers = [...new Set(users.map(r => r.user_id as string))];
+    const uniqueUsers = [...userSet];
     let processed = 0;
 
     for (const userId of uniqueUsers) {
@@ -67,14 +76,16 @@ export class MonthlyCloseService {
           }, { onConflict: 'user_id,year,month' });
 
         if (upsertErr) {
-          errors.push(`user ${userId}: ${upsertErr.message}`);
+          // Keep error strings free of user identifiers and amounts.
+          errors.push(upsertErr.message);
         } else {
           processed++;
-          this.logger.log(`Closed month ${year}-${month} for user ${userId}: income=${totalIncome}, expenses=${totalExpenses}`);
+          // Do not log per-user income/expense amounts (sensitive financial data).
+          this.logger.log(`Closed month ${year}-${month} for a user`);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`user ${userId}: ${msg}`);
+        errors.push(msg);
       }
     }
 

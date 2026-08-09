@@ -14,27 +14,53 @@ function showOverlay(title: string, detail: string) {
     'background:#070B14','display:flex','align-items:center',
     'justify-content:center','padding:24px','font-family:sans-serif',
   ].join(';');
-  div.innerHTML = `
-    <div style="background:#0F172A;border:1px solid #EF4444;border-radius:20px;padding:28px;max-width:420px;width:100%;text-align:center">
-      <div style="font-size:48px;margin-bottom:12px">⚠️</div>
-      <div style="color:#F8FAFC;font-size:18px;font-weight:700;margin-bottom:8px">${title}</div>
-      <div style="color:#94A3B8;font-size:12px;margin-bottom:20px;background:#070B14;padding:12px;border-radius:10px;text-align:left;word-break:break-all;white-space:pre-wrap;max-height:200px;overflow:auto">${detail}</div>
-      <button onclick="this.closest('#nexo-error-overlay').remove();location.reload()"
-        style="padding:12px 24px;border-radius:12px;border:none;background:linear-gradient(135deg,#22C55E,#16A34A);color:#fff;font-size:14px;font-weight:700;cursor:pointer">
-        Recargar
-      </button>
-    </div>`;
+
+  // Static chrome only — never interpolate dynamic strings into innerHTML.
+  // `title`/`detail` can contain attacker-influenced text (parsed email
+  // content, server error bodies), so they are inserted via textContent.
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#0F172A;border:1px solid #EF4444;border-radius:20px;padding:28px;max-width:420px;width:100%;text-align:center';
+
+  const emoji = document.createElement('div');
+  emoji.style.cssText = 'font-size:48px;margin-bottom:12px';
+  emoji.textContent = '⚠️';
+
+  const titleEl = document.createElement('div');
+  titleEl.style.cssText = 'color:#F8FAFC;font-size:18px;font-weight:700;margin-bottom:8px';
+  titleEl.textContent = title;
+
+  const detailEl = document.createElement('div');
+  detailEl.style.cssText = 'color:#94A3B8;font-size:12px;margin-bottom:20px;background:#070B14;padding:12px;border-radius:10px;text-align:left;word-break:break-all;white-space:pre-wrap;max-height:200px;overflow:auto';
+  detailEl.textContent = detail;
+
+  const btn = document.createElement('button');
+  btn.style.cssText = 'padding:12px 24px;border-radius:12px;border:none;background:linear-gradient(135deg,#22C55E,#16A34A);color:#fff;font-size:14px;font-weight:700;cursor:pointer';
+  btn.textContent = 'Recargar';
+  btn.addEventListener('click', () => { div.remove(); location.reload(); });
+
+  card.append(emoji, titleEl, detailEl, btn);
+  div.appendChild(card);
   document.body.appendChild(div);
 }
 
-// Stale SW chunk: "Script error." with no detail = cross-origin import failure.
-// This happens when the SW activates with new assets but the old app shell tries
-// to import old chunk names that are no longer cached. Safest response: reload.
-function isChunkLoadError(msg: unknown, err: Error | null | undefined): boolean {
-  if (String(msg) === 'Script error.') return true;
-  if (err?.message?.includes('dynamically imported module')) return true;
-  if (err?.message?.includes('Failed to fetch')) return true;
+// Genuine stale-chunk / dynamic-import failure after a new deploy → reload.
+// Deliberately NARROW: a bare "Script error." (cross-origin, e.g. a browser
+// extension) or a generic "Failed to fetch" (any network blip) must NOT trigger
+// a reload — that caused spurious reload loops.
+function isChunkLoadError(_msg: unknown, err: Error | null | undefined): boolean {
+  const m = err?.message ?? '';
   if (err?.name === 'ChunkLoadError') return true;
+  if (/dynamically imported module/i.test(m)) return true;
+  if (/importing a module script failed/i.test(m)) return true;
+  if (/error loading dynamically imported module/i.test(m)) return true;
+  return false;
+}
+
+// Benign errors that should never surface a blocking overlay.
+function isBenignError(msg: unknown, err: Error | null | undefined): boolean {
+  const s = `${String(msg)} ${err?.message ?? ''}`;
+  if (/ResizeObserver loop/i.test(s)) return true;
+  if (String(msg) === 'Script error.') return true; // cross-origin, no detail
   return false;
 }
 
@@ -51,36 +77,62 @@ function safeReload() {
 
 window.onerror = (_msg, _src, _line, _col, error) => {
   if (isChunkLoadError(_msg, error)) { safeReload(); return true; }
-  showOverlay('Error en la app', error ? `${error.name}: ${error.message}\n\n${error.stack ?? ''}` : String(_msg));
-  return true;
+  // Non-fatal window errors (extensions, ResizeObserver, stray rejections)
+  // must not blank the app with a full-screen overlay — just log them.
+  console.error('window.onerror:', _msg, error);
+  return false;
 };
 
 window.addEventListener('unhandledrejection', (e) => {
   const err = e.reason;
   if (isChunkLoadError(err?.message, err instanceof Error ? err : null)) { safeReload(); return; }
-  const detail = err instanceof Error
-    ? `${err.name}: ${err.message}\n\n${err.stack ?? ''}`
-    : JSON.stringify(err, null, 2);
-  showOverlay('Error sin capturar', detail);
+  if (isBenignError(err?.message, err instanceof Error ? err : null)) return;
+  // Log unhandled rejections but don't hijack the whole screen; the React
+  // ErrorBoundary handles genuine render failures with a recoverable UI.
+  console.error('unhandledrejection:', err);
 });
 
 // ── React error boundary ──────────────────────────────────────────────────────
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
-  { error: Error | null; componentStack: string }
+  { error: Error | null }
 > {
-  state = { error: null, componentStack: '' };
+  state = { error: null as Error | null };
   static getDerivedStateFromError(e: Error) { return { error: e }; }
   componentDidCatch(e: Error, info: React.ErrorInfo) {
-    // info.componentStack shows exactly which component caused the error
-    this.setState({ componentStack: info.componentStack ?? '' });
-    showOverlay(
-      'Error de renderizado',
-      `${e.name}: ${e.message}\n\nComponente:\n${info.componentStack ?? ''}\n\nStack:\n${e.stack ?? ''}`,
-    );
+    // Log for diagnostics; do NOT paint the global overlay — render a
+    // recoverable fallback instead so one bad screen doesn't nuke the app.
+    console.error('Render error:', e, info.componentStack);
   }
   render() {
-    if (this.state.error) return null;
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight:'100vh', background:'#0A0C0F', color:'#F7F9FC',
+          display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+          padding:24, gap:16, fontFamily:'system-ui,sans-serif', textAlign:'center' }}>
+          <div style={{ fontSize:44 }}>⚠️</div>
+          <div style={{ fontSize:18, fontWeight:700 }}>Algo salió mal</div>
+          <div style={{ fontSize:13, color:'#94A3B8', maxWidth:320 }}>
+            Ocurrió un error al mostrar esta pantalla. Puedes reintentar sin perder tu sesión.
+          </div>
+          <div style={{ display:'flex', gap:10 }}>
+            <button
+              onClick={() => this.setState({ error: null })}
+              style={{ padding:'12px 22px', borderRadius:12, border:'none',
+                background:'linear-gradient(135deg,#31D67B,#22A85A)', color:'#062',
+                fontSize:14, fontWeight:700, cursor:'pointer' }}>
+              Reintentar
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              style={{ padding:'12px 22px', borderRadius:12, border:'1px solid #243650',
+                background:'transparent', color:'#94A3B8', fontSize:14, fontWeight:700, cursor:'pointer' }}>
+              Recargar
+            </button>
+          </div>
+        </div>
+      );
+    }
     return this.props.children;
   }
 }
@@ -114,8 +166,8 @@ function showUpdateBanner() {
   banner.id = 'oria-update-banner';
   banner.style.cssText = [
     'position:fixed','top:0','left:0','right:0','z-index:99999',
-    'background:linear-gradient(90deg,#0D2137,#112035)',
-    'border-bottom:2px solid rgba(49,214,123,0.5)',
+    'background:linear-gradient(90deg,#111419,#0A0C0F)',
+    'border-bottom:2px solid rgba(0,229,160,0.5)',
     'padding:14px 20px',
     'padding-top:calc(14px + env(safe-area-inset-top))',
     'display:flex','align-items:center','gap:12px',
@@ -124,11 +176,11 @@ function showUpdateBanner() {
   banner.innerHTML = `
     <span style="font-size:20px">✨</span>
     <div style="flex:1">
-      <div style="color:#31D67B;font-size:13px;font-weight:700">Nueva versión disponible</div>
+      <div style="color:#00E5A0;font-size:13px;font-weight:700">Nueva versión disponible</div>
       <div style="color:#94A3B8;font-size:11px;margin-top:1px">Toca Actualizar para obtener las últimas mejoras</div>
     </div>
     <button id="oria-update-btn"
-      style="background:linear-gradient(135deg,#31D67B,#22A85A);border:none;border-radius:10px;
+      style="background:linear-gradient(135deg,#00E5A0,#00B87A);border:none;border-radius:10px;
              padding:8px 16px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">
       Actualizar
     </button>

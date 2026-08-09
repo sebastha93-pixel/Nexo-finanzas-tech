@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, ActivityIndicator, RefreshControl, Platform,
+  View, Text, StyleSheet, FlatList, Pressable,
+  TextInput, ActivityIndicator, RefreshControl, Platform, Modal,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Spacing, Typography, BorderRadius } from '../../theme';
+import { Colors, Spacing, Typography, BorderRadius, NumberTextStyles } from '../../theme';
 import { api } from '../../services/api';
 import { Transaction } from '../../types';
+import { AddTransactionScreen } from './AddTransactionScreen';
 
 // ─── helpers ───────────────────────────────────────────────
 const fmt = (n: number) =>
@@ -37,6 +37,9 @@ const CATEGORY_ICONS: Record<string, string> = {
   Suscripciones: 'repeat', Impuestos: 'document-text',
 };
 
+// Row height constant for FlatList
+const ROW_HEIGHT = 56;
+
 // ─── Component ─────────────────────────────────────────────
 type FilterType = 'all' | 'income' | 'expense';
 
@@ -50,6 +53,7 @@ export function TransactionsScreen() {
   const [hasMore, setHasMore]           = useState(true);
   const [income, setIncome]             = useState(0);
   const [expense, setExpense]           = useState(0);
+  const [showAdd, setShowAdd]           = useState(false);
 
   const load = useCallback(async (reset = false) => {
     try {
@@ -98,16 +102,27 @@ export function TransactionsScreen() {
   }, [load]);
 
   // ── Render helpers ────────────────────────────────────────
-  const renderTxn = ({ item }: { item: Transaction }) => {
-    const isIncome = item.transaction_type === 'income';
-    const catName  = item.category?.name || '';
-    const iconName = CATEGORY_ICONS[catName] || (isIncome ? 'arrow-down-circle' : 'arrow-up-circle');
-    const color    = item.category?.color || (isIncome ? Colors.accent : Colors.danger);
+  const renderTxn = (item: Transaction) => {
+    const isIncome   = item.transaction_type === 'income';
+    const isTransfer = item.transaction_type === 'transfer';
+    const catName    = item.category?.name || '';
+    const iconName   = CATEGORY_ICONS[catName] || (isIncome ? 'arrow-down-circle' : 'arrow-up-circle');
+    const iconColor  = item.category?.color || (isIncome ? Colors.accent : Colors.textMuted);
+
+    // Amount color: income = accent, expense = textPrimary, transfer = textSecondary
+    const amtColor = isIncome ? Colors.accent : isTransfer ? Colors.textSecondary : Colors.textPrimary;
+    const amtPrefix = isIncome ? '+' : isTransfer ? '' : '-';
 
     return (
-      <View style={s.txnRow}>
-        <View style={[s.txnIcon, { backgroundColor: color + '20' }]}>
-          <Ionicons name={iconName as 'home'} size={18} color={color} />
+      <Pressable
+        key={item.id}
+        style={({ pressed }) => [
+          s.txnRow,
+          pressed && { opacity: 0.72, transform: [{ scale: 0.97 }] },
+        ]}
+      >
+        <View style={[s.txnIcon, { backgroundColor: (item.category?.color || iconColor) + '20' }]}>
+          <Ionicons name={iconName as 'home'} size={18} color={iconColor} />
         </View>
         <View style={s.txnMeta}>
           <Text style={s.txnDesc} numberOfLines={1}>
@@ -117,10 +132,10 @@ export function TransactionsScreen() {
             {item.account?.name || '—'}  ·  {fmtDate(item.date)}
           </Text>
         </View>
-        <Text style={[s.txnAmt, { color: isIncome ? Colors.accent : Colors.textPrimary }]}>
-          {isIncome ? '+' : '-'}{fmt(item.amount)}
+        <Text style={[s.txnAmt, { color: amtColor }]}>
+          {amtPrefix}{fmt(item.amount)}
         </Text>
-      </View>
+      </Pressable>
     );
   };
 
@@ -131,21 +146,30 @@ export function TransactionsScreen() {
     const label = d.toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'long' });
     return (
       <View>
+        {/* Month section header: DM Mono 9px uppercase muted */}
         <Text style={s.dateLabel}>{label}</Text>
-        {items.map((t) => <View key={t.id}>{renderTxn({ item: t })}</View>)}
+        <View style={s.dayGroup}>
+          {items.map((t, i) => (
+            <View key={t.id}>
+              {renderTxn(t)}
+              {/* Flat divider between rows */}
+              {i < items.length - 1 && <View style={s.rowDivider} />}
+            </View>
+          ))}
+        </View>
       </View>
     );
   };
 
   return (
     <View style={s.root}>
-      {/* Header */}
-      <LinearGradient colors={['#0D1B3E', Colors.background]} style={s.header}>
+      {/* ── HEADER — flat bg, no gradient ── */}
+      <View style={s.header}>
         <Text style={s.headerTitle}>Movimientos</Text>
 
         {/* Summary pills */}
         <View style={s.summaryRow}>
-          <View style={[s.summaryPill, { backgroundColor: Colors.successBg }]}>
+          <View style={[s.summaryPill, { backgroundColor: Colors.accentBg }]}>
             <Ionicons name="arrow-down" size={12} color={Colors.accent} />
             <Text style={[s.summaryVal, { color: Colors.accent }]}>{fmt(income)}</Text>
           </View>
@@ -154,9 +178,9 @@ export function TransactionsScreen() {
             <Text style={[s.summaryVal, { color: Colors.danger }]}>{fmt(expense)}</Text>
           </View>
         </View>
-      </LinearGradient>
+      </View>
 
-      {/* Search */}
+      {/* ── SEARCH ── */}
       <View style={s.searchWrap}>
         <Ionicons name="search-outline" size={16} color={Colors.textMuted} style={s.searchIcon} />
         <TextInput
@@ -168,32 +192,50 @@ export function TransactionsScreen() {
           returnKeyType="search"
         />
         {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')}>
+          <Pressable onPress={() => setSearch('')}>
             <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
-          </TouchableOpacity>
+          </Pressable>
         )}
       </View>
 
-      {/* Filter tabs */}
+      {/* ── FILTER CHIPS ── */}
       <View style={s.filterRow}>
         {(['all', 'income', 'expense'] as FilterType[]).map((f) => (
-          <TouchableOpacity
+          <Pressable
             key={f}
-            style={[s.filterTab, filter === f && s.filterTabActive]}
+            style={({ pressed }) => [
+              s.filterTab,
+              filter === f && s.filterTabActive,
+              pressed && { opacity: 0.8 },
+            ]}
             onPress={() => setFilter(f)}
           >
             <Text style={[s.filterTabText, filter === f && s.filterTabTextActive]}>
               {f === 'all' ? 'Todos' : f === 'income' ? 'Ingresos' : 'Gastos'}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         ))}
       </View>
 
-      {/* List */}
+      {/* ── LIST ── */}
       {isLoading ? (
         <ActivityIndicator color={Colors.accent} style={{ flex: 1 }} />
       ) : transactions.length === 0 ? (
-        <EmptyState filter={filter} />
+        <View style={s.empty}>
+          <View style={s.emptyIcon}>
+            <Ionicons name="list-outline" size={32} color={Colors.textMuted} />
+          </View>
+          <Text style={s.emptyTitle}>
+            {filter === 'income' ? 'Sin ingresos'
+              : filter === 'expense' ? 'Sin gastos'
+              : 'Sin movimientos'}
+          </Text>
+          <Text style={s.emptySub}>
+            {filter === 'income' ? 'No tienes ingresos registrados este período.'
+              : filter === 'expense' ? 'No tienes gastos registrados este período.'
+              : 'Usa el botón + para registrar tu primer movimiento.'}
+          </Text>
+        </View>
       ) : (
         <FlatList
           data={groups}
@@ -206,25 +248,32 @@ export function TransactionsScreen() {
           }
           onEndReached={() => hasMore && load()}
           onEndReachedThreshold={0.4}
-          ListFooterComponent={hasMore ? <ActivityIndicator color={Colors.accent} style={{ marginVertical: 16 }} /> : null}
+          ListFooterComponent={
+            hasMore
+              ? <ActivityIndicator color={Colors.accent} style={{ marginVertical: 16 }} />
+              : null
+          }
         />
       )}
-    </View>
-  );
-}
 
-function EmptyState({ filter }: { filter: FilterType }) {
-  return (
-    <View style={s.empty}>
-      <LinearGradient colors={[Colors.accent + '20', Colors.primary + '10']} style={s.emptyIcon}>
-        <Ionicons name="swap-horizontal" size={32} color={Colors.accent} />
-      </LinearGradient>
-      <Text style={s.emptyTitle}>Sin movimientos</Text>
-      <Text style={s.emptySub}>
-        {filter === 'income' ? 'No tienes ingresos registrados este período.'
-          : filter === 'expense' ? 'No tienes gastos registrados este período.'
-          : 'Usa el botón + para registrar tu primer movimiento.'}
-      </Text>
+      {/* ── FAB + button (bottom-right, above nav) ── */}
+      <Pressable
+        style={({ pressed }) => [
+          s.fab,
+          pressed && { opacity: 0.72, transform: [{ scale: 0.97 }] },
+        ]}
+        onPress={() => setShowAdd(true)}
+      >
+        <Ionicons name="add" size={26} color={Colors.background} />
+      </Pressable>
+
+      {/* Add Transaction modal */}
+      <Modal visible={showAdd} animationType="slide" presentationStyle="pageSheet">
+        <AddTransactionScreen
+          onClose={() => setShowAdd(false)}
+          onSaved={() => { setShowAdd(false); load(true); }}
+        />
+      </Modal>
     </View>
   );
 }
@@ -233,75 +282,118 @@ function EmptyState({ filter }: { filter: FilterType }) {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: Colors.background },
 
+  // Header — flat, no gradient
   header: {
     paddingTop: Platform.OS === 'ios' ? 56 : 40,
     paddingBottom: Spacing.md,
     paddingHorizontal: Spacing.lg,
+    backgroundColor: Colors.background,
     gap: Spacing.sm,
   },
-  headerTitle: { color: Colors.textPrimary, fontSize: Typography.xl, fontWeight: Typography.bold },
+  headerTitle: {
+    color: Colors.textPrimary, fontSize: Typography.xl,
+    fontWeight: Typography.bold, fontFamily: Typography.fontSansBold,
+  },
   summaryRow: { flexDirection: 'row', gap: Spacing.sm },
   summaryPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: Spacing.sm, paddingVertical: 4,
     borderRadius: BorderRadius.full,
   },
-  summaryVal: { fontSize: Typography.xs, fontWeight: Typography.semibold },
+  summaryVal: {
+    ...NumberTextStyles.percentageSm,
+    fontSize: Typography.xs,
+  },
 
+  // Search — surface2 bg
   searchWrap: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceMid,
     marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
-    borderRadius: BorderRadius.lg,
+    borderRadius: 8,
     paddingHorizontal: Spacing.md,
-    borderWidth: 1, borderColor: Colors.border,
+    borderWidth: 1, borderColor: Colors.borderLight,
     height: 44,
   },
   searchIcon: { marginRight: Spacing.xs },
   searchInput: { flex: 1, color: Colors.textPrimary, fontSize: Typography.base },
 
+  // Filter chips
   filterRow: {
     flexDirection: 'row',
     marginHorizontal: Spacing.lg,
     marginBottom: Spacing.md,
     backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
+    borderRadius: 8,
     padding: 3,
     borderWidth: 1, borderColor: Colors.border,
   },
   filterTab: {
     flex: 1, paddingVertical: Spacing.xs + 2,
-    borderRadius: BorderRadius.md,
+    borderRadius: 6,
     alignItems: 'center',
   },
   filterTabActive: { backgroundColor: Colors.accent },
   filterTabText: { color: Colors.textMuted, fontSize: Typography.sm, fontWeight: Typography.medium },
-  filterTabTextActive: { color: '#fff', fontWeight: Typography.semibold },
+  filterTabTextActive: { color: Colors.background, fontWeight: Typography.semibold },
 
   list: { paddingHorizontal: Spacing.lg, paddingBottom: 120 },
 
+  // Month section header: DM Mono 9px uppercase muted
   dateLabel: {
-    color: Colors.textMuted, fontSize: Typography.xs,
-    fontWeight: Typography.semibold, textTransform: 'uppercase',
-    letterSpacing: 0.8, marginTop: Spacing.md, marginBottom: Spacing.xs,
+    color: Colors.textMuted, fontSize: 9,
+    fontFamily: Typography.fontMono,
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+    marginTop: Spacing.md, marginBottom: 4,
   },
 
+  // Day group container with rounded corners
+  dayGroup: {
+    backgroundColor: Colors.surface,
+    borderRadius: 8,
+    borderWidth: 1, borderColor: Colors.border,
+    overflow: 'hidden',
+    marginBottom: Spacing.xs,
+  },
+
+  // Transaction row — exactly 56px, flat
   txnRow: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    marginBottom: Spacing.xs,
-    borderWidth: 1, borderColor: Colors.border,
+    height: ROW_HEIGHT,
+    paddingHorizontal: Spacing.md,
   },
-  txnIcon: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  // Divider between rows (no divider after last row)
+  rowDivider: {
+    height: 1, backgroundColor: Colors.border,
+    marginHorizontal: Spacing.md,
+  },
+  txnIcon: { width: 36, height: 36, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   txnMeta: { flex: 1 },
-  txnDesc: { color: Colors.textPrimary, fontSize: Typography.base, fontWeight: Typography.medium },
-  txnSub: { color: Colors.textMuted, fontSize: Typography.xs, marginTop: 2 },
-  txnAmt: { fontSize: Typography.base, fontWeight: Typography.bold },
+  txnDesc: { color: Colors.textPrimary, fontSize: Typography.sm, fontWeight: Typography.medium },
+  txnSub: { color: Colors.textMuted, fontSize: 10, marginTop: 1 },
+  txnAmt: {
+    ...NumberTextStyles.amount,
+    fontSize: Typography.sm,
+  },
 
-  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
-  emptyIcon: { width: 72, height: 72, borderRadius: 36, justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg },
-  emptyTitle: { color: Colors.textPrimary, fontSize: Typography.lg, fontWeight: Typography.bold, marginBottom: Spacing.xs },
+  // Empty state
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.md },
+  emptyIcon: {
+    width: 72, height: 72, borderRadius: 36,
+    backgroundColor: Colors.surfaceElevated,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  emptyTitle: { color: Colors.textPrimary, fontSize: Typography.lg, fontWeight: Typography.bold },
   emptySub: { color: Colors.textSecondary, fontSize: Typography.sm, textAlign: 'center', lineHeight: 22 },
+
+  // FAB — accent bg, bottom-right above nav
+  fab: {
+    position: 'absolute',
+    bottom: 80,
+    right: Spacing.lg,
+    width: 52, height: 52, borderRadius: 10,
+    backgroundColor: Colors.accent,
+    justifyContent: 'center', alignItems: 'center',
+  },
 });

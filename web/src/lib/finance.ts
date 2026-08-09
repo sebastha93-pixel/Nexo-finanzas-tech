@@ -26,6 +26,7 @@ export interface MonthlySummary {
 }
 
 export interface Account {
+  id: string;
   account_type: string;
   initial_balance: number | null;
   credit_limit: number | null;
@@ -34,6 +35,7 @@ export interface Account {
   institution: string;
   account_suffix: string | null;
   name: string;
+  currentBalance: number;   // initial_balance ± all transactions since account creation
 }
 
 export interface Goal {
@@ -91,7 +93,7 @@ export async function loadFinanceSnapshot(): Promise<FinanceSnapshot | null> {
     txnData = txnBase.data;
   }
 
-  const [summariesRes, accountsRes, goalsRes] = await Promise.all([
+  const [summariesRes, accountsRes, goalsRes, allTxnsRes] = await Promise.all([
     supabase
       .from('monthly_summaries')
       .select('year, month, total_income, total_expenses, net_savings')
@@ -101,7 +103,7 @@ export async function loadFinanceSnapshot(): Promise<FinanceSnapshot | null> {
       .order('month', { ascending: false }),
     supabase
       .from('accounts')
-      .select('account_type, initial_balance, credit_limit, initial_balance_usd, credit_limit_usd, institution, account_suffix, name')
+      .select('id, account_type, initial_balance, credit_limit, initial_balance_usd, credit_limit_usd, institution, account_suffix, name')
       .eq('user_id', user.id)
       .eq('is_active', true),
     supabase
@@ -110,13 +112,67 @@ export async function loadFinanceSnapshot(): Promise<FinanceSnapshot | null> {
       .eq('user_id', user.id)
       .eq('status', 'active')
       .order('created_at', { ascending: false }),
+    supabase
+      .from('transactions')
+      .select('account_id, to_account_id, transaction_type, amount')
+      .eq('user_id', user.id),
   ]);
+
+  // Compute per-account balance = initial_balance ± all transactions since creation
+  const txnsByAccount: Record<string, { income: number; expense: number }> = {};
+  let globalIncome = 0, globalExpense = 0;
+  let linkedIncome = 0, linkedExpense = 0;
+
+  for (const txn of (allTxnsRes.data ?? [])) {
+    const t = txn as { account_id: string | null; to_account_id: string | null; transaction_type: string; amount: number };
+    const amt = Number(t.amount) || 0;   // guard against null/undefined → NaN
+
+    // A transfer moves money between the user's OWN accounts: net-zero for
+    // income/expense totals — just debit the source and credit the destination.
+    if (t.transaction_type === 'transfer') {
+      if (t.account_id) {
+        if (!txnsByAccount[t.account_id]) txnsByAccount[t.account_id] = { income: 0, expense: 0 };
+        txnsByAccount[t.account_id].expense += amt;
+      }
+      if (t.to_account_id) {
+        if (!txnsByAccount[t.to_account_id]) txnsByAccount[t.to_account_id] = { income: 0, expense: 0 };
+        txnsByAccount[t.to_account_id].income += amt;
+      }
+      continue;
+    }
+
+    if (t.transaction_type === 'income') globalIncome += amt; else globalExpense += amt;
+    if (!t.account_id) continue;
+    if (!txnsByAccount[t.account_id]) txnsByAccount[t.account_id] = { income: 0, expense: 0 };
+    if (t.transaction_type === 'income') { txnsByAccount[t.account_id].income += amt; linkedIncome += amt; }
+    else { txnsByAccount[t.account_id].expense += amt; linkedExpense += amt; }
+  }
+
+  type RawAccount = Omit<Account, 'currentBalance'>;
+  const rawAccounts = (accountsRes.data as RawAccount[]) ?? [];
+  const DEBT_TYPES = ['credit_card', 'loan'];
+  const debitRaw = rawAccounts.filter(a => !DEBT_TYPES.includes(a.account_type));
+
+  // Distribute unlinked transactions (no account_id) across debit accounts, weighted by initial_balance
+  const unlinkedNet = (globalIncome - linkedIncome) - (globalExpense - linkedExpense);
+  const totalBase   = debitRaw.reduce((s, a) => s + Math.max(0, Number(a.initial_balance ?? 0)), 0);
+
+  const accounts: Account[] = rawAccounts.map(acc => {
+    const t = txnsByAccount[acc.id] ?? { income: 0, expense: 0 };
+    const isDebt = DEBT_TYPES.includes(acc.account_type);
+    const base = Number(acc.initial_balance ?? 0);
+    if (isDebt) return { ...acc, currentBalance: Math.max(0, base + t.expense - t.income) };
+    const weight = debitRaw.length === 0 ? 0
+      : totalBase > 0 ? Math.max(0, base) / totalBase
+      : 1 / debitRaw.length;
+    return { ...acc, currentBalance: base + t.income - t.expense + unlinkedNet * weight };
+  });
 
   return {
     userName: firstName(user.email ?? '', user.user_metadata as Record<string, string>),
     currentTxns:   (txnData as Txn[]) ?? [],
     prevSummaries: (summariesRes.data as MonthlySummary[]) ?? [],
-    accounts:      (accountsRes.data as Account[]) ?? [],
+    accounts,
     goals:         (goalsRes.data as Goal[]) ?? [],
     trm: (() => { try { return parseFloat(localStorage.getItem('nexo_trm') ?? '3516') || 3516; } catch { return 3516; } })(),
   };
@@ -140,35 +196,38 @@ export interface Metrics {
 
 export function computeMetrics(s: FinanceSnapshot): Metrics {
   const trm = s.trm > 0 ? s.trm : 3516;
-  const debitAccounts  = s.accounts.filter(a => a.account_type !== 'credit_card');
-  const creditAccounts = s.accounts.filter(a => a.account_type === 'credit_card');
-  const debitBase  = debitAccounts.reduce((t, a) => t + Number(a.initial_balance ?? 0), 0);
-  // Credit debt = COP balance + USD balance converted to COP
-  const creditDebt = creditAccounts.reduce((t, a) =>
-    t + Number(a.initial_balance ?? 0) + Number(a.initial_balance_usd ?? 0) * trm, 0);
+  const DEBT_TYPES = ['credit_card', 'loan'];
+  const debitAccounts  = s.accounts.filter(a => !DEBT_TYPES.includes(a.account_type));
+  const creditAccounts = s.accounts.filter(a => DEBT_TYPES.includes(a.account_type));
+
+  // Live net worth: use currentBalance (initial_balance ± all transactions) for accuracy
+  const totalAssets = debitAccounts.reduce((t, a) => t + a.currentBalance, 0);
+  // Credit debt: COP currentBalance (debt after payments) + USD balance converted to COP
+  const creditDebt  = creditAccounts.reduce((t, a) =>
+    t + a.currentBalance + Number(a.initial_balance_usd ?? 0) * trm, 0);
+  const netWorth = totalAssets - creditDebt;
 
   const curIncome  = s.currentTxns.filter(t => t.transaction_type === 'income').reduce((t, x) => t + Number(x.amount), 0);
   const curExpense = s.currentTxns.filter(t => t.transaction_type === 'expense').reduce((t, x) => t + Number(x.amount), 0);
   const curNet     = curIncome - curExpense;
 
-  // Net worth evolution: walk closed months oldest→newest accumulating net
+  // History chart: walk closed months from initial_balance baseline (for trend visualization)
   const asc = [...s.prevSummaries].sort((a, b) => a.year - b.year || a.month - b.month);
   const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const debitBase = debitAccounts.reduce((t, a) => t + Number(a.initial_balance ?? 0), 0);
   let running = debitBase;
   const history: { label: string; value: number }[] = [];
   for (const m of asc) {
     running += Number(m.total_income) - Number(m.total_expenses);
     history.push({ label: `${MONTHS[m.month - 1]}`, value: running - creditDebt });
   }
-  const totalAssets = running + curNet;
-  const netWorth    = totalAssets - creditDebt;
   const now = new Date();
   history.push({ label: MONTHS[now.getMonth()], value: netWorth });
 
-  // Utilization = (COP debt + USD debt*TRM) / (COP limit + USD limit*TRM)
+  // Utilization = (COP current debt + USD balance*TRM) / (COP limit + USD limit*TRM)
   const utils = creditAccounts
     .map(a => {
-      const totalDebt  = Number(a.initial_balance ?? 0) + Number(a.initial_balance_usd ?? 0) * trm;
+      const totalDebt  = a.currentBalance + Number(a.initial_balance_usd ?? 0) * trm;
       const totalLimit = Number(a.credit_limit ?? 0) + Number(a.credit_limit_usd ?? 0) * trm;
       return totalLimit > 0 ? (totalDebt / totalLimit) * 100 : null;
     })
@@ -267,7 +326,7 @@ export function computeOriaScore(s: FinanceSnapshot, m: Metrics): OriaScore {
 
   const total = factors.reduce((t, f) => t + f.points, 0);
   const label = total >= 80 ? 'Excelente' : total >= 60 ? 'Sólida' : total >= 40 ? 'En construcción' : 'Frágil';
-  const color = total >= 80 ? '#31D67B' : total >= 60 ? '#5DE89A' : total >= 40 ? '#F59E0B' : '#EF4444';
+  const color = total >= 80 ? '#00E5A0' : total >= 60 ? '#4DFFC0' : total >= 40 ? '#F5A623' : '#EF4444';
 
   // Recommendation: target the weakest factor (by % of max)
   const weakest = [...factors].sort((a, b) => a.points / a.max - b.points / b.max)[0];

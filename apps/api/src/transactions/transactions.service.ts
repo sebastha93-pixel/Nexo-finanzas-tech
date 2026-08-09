@@ -1,4 +1,4 @@
-import { Injectable, Inject, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Inject, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase/supabase.module';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -18,7 +18,7 @@ export class TransactionsService {
         *,
         account:accounts(id, name, institution, color, icon, account_type),
         category:categories(id, name, icon, color, category_type)
-      `)
+      `, { count: 'exact' })
       .eq('user_id', userId)
       .order('date', { ascending: false })
       .order('created_at', { ascending: false });
@@ -70,6 +70,22 @@ export class TransactionsService {
   }
 
   async create(userId: string, dto: CreateTransactionDto) {
+    // A transfer MUST have a destination, and it must differ from the source —
+    // otherwise the balance trigger subtracts from the source and credits
+    // nowhere (money silently vanishes from net worth).
+    const toAccountId = (dto as { to_account_id?: string }).to_account_id;
+    if (dto.transaction_type === 'transfer') {
+      if (!toAccountId) throw new BadRequestException('Una transferencia requiere cuenta destino.');
+      if (toAccountId === dto.account_id) throw new BadRequestException('La cuenta origen y destino no pueden ser la misma.');
+    }
+
+    // The backend client uses the service-role key (RLS is bypassed), so we
+    // must verify referenced rows belong to the caller in application code —
+    // otherwise a user could reference another user's account/category.
+    await this.assertOwnedAccount(userId, dto.account_id);
+    await this.assertOwnedAccount(userId, toAccountId);
+    await this.assertOwnedCategory(userId, (dto as { category_id?: string }).category_id);
+
     const { data, error } = await this.supabase
       .from('transactions')
       .insert({ ...dto, user_id: userId })
@@ -78,6 +94,30 @@ export class TransactionsService {
 
     if (error) throw new Error(error.message);
     return data;
+  }
+
+  private async assertOwnedAccount(userId: string, accountId?: string | null) {
+    if (!accountId) return;
+    const { data } = await this.supabase
+      .from('accounts')
+      .select('id')
+      .eq('id', accountId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!data) throw new ForbiddenException('Account does not belong to the user');
+  }
+
+  private async assertOwnedCategory(userId: string, categoryId?: string | null) {
+    if (!categoryId) return;
+    const { data } = await this.supabase
+      .from('categories')
+      .select('id, is_system, user_id')
+      .eq('id', categoryId)
+      .maybeSingle();
+    // Allow system categories (shared) or the user's own categories.
+    if (!data || (!data.is_system && data.user_id !== userId)) {
+      throw new ForbiddenException('Category does not belong to the user');
+    }
   }
 
   async update(userId: string, id: string, dto: UpdateTransactionDto) {

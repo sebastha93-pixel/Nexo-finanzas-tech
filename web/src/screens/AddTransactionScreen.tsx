@@ -61,7 +61,14 @@ export function AddTransactionScreen({ userId, onClose, onSaved }: {
   const effectiveCat = cat === CUSTOM_MARKER ? (customCat.trim() || 'Personalizado') : cat;
 
   async function handleSave() {
-    const num = parseFloat(amount.replace(/[^0-9.]/g, ''));
+    // Handle Colombian format: '1.000.000' → 1000000, '1.5' → 1.5
+    const rawAmt = amount.replace(/[^0-9.,]/g, '');
+    const amtParts = rawAmt.split('.');
+    const amtLast = amtParts[amtParts.length - 1] ?? '';
+    const amtNorm = (amtParts.length > 2 || (amtParts.length === 2 && amtLast.length === 3))
+      ? rawAmt.replace(/\./g, '').replace(',', '.')
+      : rawAmt.replace(',', '.');
+    const num = parseFloat(amtNorm);
     if (!num || num <= 0) { setError('Ingresa un monto válido'); return; }
     if (num > 999_999_999_999) { setError('Monto demasiado alto'); return; }
     if (!desc.trim()) { setError('Ingresa una descripción'); return; }
@@ -94,7 +101,7 @@ export function AddTransactionScreen({ userId, onClose, onSaved }: {
 
   return (
     <div
-      style={{ position:'fixed', inset:0, background:'rgba(8,20,38,0.88)', zIndex:200,
+      style={{ position:'fixed', inset:0, background:'rgba(10,12,15,0.88)', zIndex:200,
         display:'flex', alignItems:'flex-end', justifyContent:'center' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
@@ -164,7 +171,7 @@ export function AddTransactionScreen({ userId, onClose, onSaved }: {
                   display:'flex', alignItems:'center', gap:8,
                   padding:'9px 14px', borderRadius:12, cursor:'pointer',
                   border:`1px solid ${accountId === 'efectivo' ? C.accent : C.border}`,
-                  background: accountId === 'efectivo' ? 'rgba(49,214,123,0.12)' : C.bg,
+                  background: accountId === 'efectivo' ? 'rgba(0,229,160,0.12)' : C.bg,
                 }}>
                 <span style={{ fontSize:18 }}>💵</span>
                 <span style={{ color: accountId === 'efectivo' ? C.accent : C.textSec, fontSize:13, fontWeight:600 }}>
@@ -181,11 +188,11 @@ export function AddTransactionScreen({ userId, onClose, onSaved }: {
                     style={{
                       display:'flex', alignItems:'center', gap:8,
                       padding:'9px 14px', borderRadius:12, cursor:'pointer',
-                      border:`1px solid ${sel ? C.primaryGlow : C.border}`,
-                      background: sel ? 'rgba(59,130,246,0.12)' : C.bg,
+                      border:`1px solid ${sel ? C.accent : C.border}`,
+                      background: sel ? 'rgba(0,229,160,0.1)' : C.bg,
                     }}>
                     <BankLogo institution={a.institution} size={22} borderRadius={6} />
-                    <span style={{ color: sel ? C.primaryGlow : C.textSec, fontSize:13, fontWeight:600 }}>
+                    <span style={{ color: sel ? C.accent : C.textSec, fontSize:13, fontWeight:600 }}>
                       {a.name}{a.account_suffix ? ` · *${a.account_suffix}` : ''}
                     </span>
                   </button>
@@ -204,12 +211,12 @@ export function AddTransactionScreen({ userId, onClose, onSaved }: {
                 return (
                   <button key={c.name} onClick={() => setCat(c.name)} style={{
                     padding:'10px 4px', borderRadius:12,
-                    border:`1px solid ${sel ? C.primaryGlow : C.border}`,
-                    background: sel ? 'rgba(59,130,246,0.15)' : C.bg,
+                    border:`1px solid ${sel ? C.accent : C.border}`,
+                    background: sel ? 'rgba(0,229,160,0.1)' : C.bg,
                     cursor:'pointer', textAlign:'center',
                   }}>
                     <div style={{ fontSize:18, marginBottom:2 }}>{c.icon}</div>
-                    <div style={{ color: sel ? C.primaryGlow : C.textMuted, fontSize:9, fontWeight:600, lineHeight:1.2 }}>
+                    <div style={{ color: sel ? C.accent : C.textMuted, fontSize:9, fontWeight:600, lineHeight:1.2 }}>
                       {isCustom ? (sel && customCat.trim() ? customCat.trim() : 'Personalizada') : c.name}
                     </div>
                   </button>
