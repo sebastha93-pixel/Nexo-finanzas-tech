@@ -20,6 +20,12 @@ interface TokenSet {
   token_expiry: string | null;
 }
 
+interface CategoryRule {
+  field: 'description' | 'recipient' | 'merchant';
+  pattern: string;
+  category: string;
+}
+
 interface EmailConnection {
   id: string;
   user_id: string;
@@ -345,13 +351,16 @@ export class EmailSyncService {
     const messages = await this.listMessages(accessToken, BANK_QUERY);
     this.logger.log(`Found ${messages.length} bank emails for user ${userId}`);
 
+    // Load the user's auto-categorization rules once for the whole batch.
+    const rules = await this.fetchCategoryRules(userId);
+
     let emailsProcessed = 0;
     let transactionsCreated = 0;
     const errors: string[] = [];
 
     for (const msg of messages) {
       try {
-        const created = await this.processMessage(accessToken, msg.id, userId);
+        const created = await this.processMessage(accessToken, msg.id, userId, rules);
         emailsProcessed++;
         if (created) transactionsCreated++;
       } catch (err) {
@@ -480,6 +489,7 @@ export class EmailSyncService {
     accessToken: string,
     messageId: string,
     userId: string,
+    rules: CategoryRule[] = [],
   ): Promise<boolean> {
     // Skip if already processed
     const { data: existing } = await this.supabase
@@ -589,7 +599,9 @@ export class EmailSyncService {
     }
 
     // Resolve category_id from category name
-    const categoryId = await this.resolveCategoryId(userId, parsed.category, parsed.type);
+    // Apply the user's auto-categorization rules (override the parser category).
+    const effectiveCategory = this.applyCategoryRules(parsed, rules);
+    const categoryId = await this.resolveCategoryId(userId, effectiveCategory, parsed.type);
 
     const accountId: string = matchedAccount.id;
 
@@ -631,6 +643,35 @@ export class EmailSyncService {
     if (reg.includes(em) || em.includes(reg)) return true;
     const regWords = reg.split(/\s+/).filter((w) => w.length > 2);
     return regWords.some((w) => em.includes(w));
+  }
+
+  // ─── User auto-categorization rules ───────────────────────────────────────
+
+  private async fetchCategoryRules(userId: string): Promise<CategoryRule[]> {
+    const { data, error } = await this.supabase
+      .from('category_rules')
+      .select('field, pattern, category')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+    if (error) {
+      // Table missing (migration pending) or any error → no rules, sync proceeds.
+      return [];
+    }
+    return (data ?? []) as CategoryRule[];
+  }
+
+  /** Apply the first matching user rule, else fall back to the parser category. */
+  private applyCategoryRules(parsed: ParsedTransaction, rules: CategoryRule[]): string {
+    const normalize = (s: string) =>
+      s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    for (const rule of rules) {
+      // Backend ParsedTransaction has no distinct recipient — use merchant.
+      const haystack =
+        rule.field === 'description' ? parsed.description : (parsed.merchant ?? '');
+      if (!haystack) continue;
+      if (normalize(haystack).includes(normalize(rule.pattern))) return rule.category;
+    }
+    return parsed.category;
   }
 
   private async resolveCategoryId(

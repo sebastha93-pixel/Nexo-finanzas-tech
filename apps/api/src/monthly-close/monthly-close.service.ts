@@ -38,6 +38,9 @@ export class MonthlyCloseService {
         .select('user_id')
         .gte('date', firstDay)
         .lte('date', lastDay)
+        // Stable order is required — OFFSET pagination without ORDER BY can
+        // skip rows across pages, which would drop users from the close.
+        .order('user_id', { ascending: true })
         .range(from, from + PAGE - 1);
       if (pageErr) {
         this.logger.error(`Failed to fetch users for close: ${pageErr.message}`);
