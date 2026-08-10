@@ -246,6 +246,7 @@ export function SettingsScreen({ userId }: { userId: string }) {
   const [syncing, setSyncing]               = useState(false);
   const [lastSync, setLastSync]             = useState<string|null>(null);
   const [diagRunning, setDiagRunning]       = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [diagResult, setDiagResult]         = useState<string|null>(null);
 
   // Bank accounts state
@@ -1504,6 +1505,30 @@ export function SettingsScreen({ userId }: { userId: string }) {
           onClick={() => { localStorage.removeItem('nexo_gmail_connected'); localStorage.removeItem('nexo_gmail_email'); supabase.auth.signOut(); }}
           style={{ width:'100%', marginBottom:8, padding:'14px 0', borderRadius:14, border:`1px solid rgba(239,68,68,0.3)`, background:'rgba(239,68,68,0.07)', color:C.danger, fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:"'DM Sans',sans-serif" }}>
           Cerrar sesión
+        </button>
+
+        {/* Eliminar cuenta (permanente) */}
+        <button
+          disabled={deletingAccount}
+          onClick={async () => {
+            if (deletingAccount) return;
+            if (!window.confirm('¿Eliminar tu cuenta y TODOS tus datos (cuentas, movimientos, metas, conexión de Gmail)? Esta acción es permanente e irreversible.')) return;
+            if (!window.confirm('Confirmación final: no se puede deshacer. ¿Eliminar tu cuenta definitivamente?')) return;
+            setDeletingAccount(true);
+            try {
+              const headers = await getAuthHeaders();
+              const res = await fetch(`${RAILWAY_API}/users/account`, { method: 'DELETE', headers });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              for (const k of Object.keys(localStorage)) { if (k.startsWith('nexo_')) localStorage.removeItem(k); }
+              await supabase.auth.signOut();
+              window.location.reload();
+            } catch {
+              setDeletingAccount(false);
+              window.alert('No se pudo eliminar la cuenta. Intenta de nuevo o escribe a soporte@oriafintech.com.');
+            }
+          }}
+          style={{ width:'100%', marginBottom:8, padding:'12px 0', borderRadius:14, border:'none', background:'transparent', color:C.textMuted, fontSize:13, fontWeight:600, cursor: deletingAccount ? 'default' : 'pointer', fontFamily:"'DM Sans',sans-serif", textDecoration:'underline', opacity: deletingAccount ? 0.6 : 1 }}>
+          {deletingAccount ? 'Eliminando cuenta…' : 'Eliminar mi cuenta permanentemente'}
         </button>
 
       </div>

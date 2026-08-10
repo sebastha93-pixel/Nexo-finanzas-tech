@@ -1,12 +1,33 @@
-import { Injectable, Inject, BadRequestException } from '@nestjs/common';
+import { Injectable, Inject, BadRequestException, Logger } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_CLIENT } from '../common/supabase/supabase.module';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// User-owned tables, ordered children → parents so explicit deletes don't hit
+// foreign-key constraints. Deleting the auth user afterwards cascades anything
+// that has ON DELETE CASCADE, so this is defense-in-depth for full erasure.
+const USER_DATA_TABLES = [
+  'transactions',
+  'goal_contributions',
+  'net_worth_snapshots',
+  'ai_conversations',
+  'ai_insights',
+  'monthly_summaries',
+  'category_rules',
+  'goals',
+  'assets',
+  'liabilities',
+  'categories',
+  'email_connections',
+  'accounts',
+];
+
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @Inject(SUPABASE_CLIENT) private readonly supabase: SupabaseClient,
   ) {}
@@ -34,5 +55,32 @@ export class UsersService {
     if (!UUID_RE.test(userId)) throw new BadRequestException('Invalid user id');
     const { data } = await this.supabase.from('categories').select('*').or(`user_id.eq.${userId},is_system.eq.true`).order('name');
     return data || [];
+  }
+
+  /**
+   * Permanently delete the user's account and all associated data.
+   * Required by Apple/Google Play for apps that support account creation.
+   */
+  async deleteAccount(userId: string) {
+    if (!UUID_RE.test(userId)) throw new BadRequestException('Invalid user id');
+
+    // Best-effort explicit erasure of all user-owned rows. For `categories`
+    // only the user's own (non-system) rows are removed.
+    for (const table of USER_DATA_TABLES) {
+      const query = this.supabase.from(table).delete();
+      const scoped = table === 'categories'
+        ? query.eq('user_id', userId).eq('is_system', false)
+        : query.eq('user_id', userId);
+      const { error } = await scoped;
+      if (error) this.logger.warn(`deleteAccount: ${table} → ${error.message}`);
+    }
+
+    // Remove the profile row, then the auth user (cascades any remaining refs).
+    await this.supabase.from('profiles').delete().eq('id', userId);
+    const { error } = await this.supabase.auth.admin.deleteUser(userId);
+    if (error) throw new Error(error.message);
+
+    this.logger.log('Account permanently deleted for a user');
+    return { message: 'Cuenta eliminada permanentemente' };
   }
 }
