@@ -62,19 +62,12 @@ export class GoalsService {
       .insert({ ...dto, goal_id: goalId, user_id: userId });
     if (insErr) throw new Error(insErr.message);
 
-    // Recompute current_amount from the authoritative sum of contributions
-    // instead of a stale read-modify-write — self-correcting and safe under
-    // concurrent contributions (both rows are counted regardless of order).
-    const { data: contribs } = await this.supabase
-      .from('goal_contributions')
-      .select('amount')
-      .eq('goal_id', goalId)
-      .eq('user_id', userId);
-    const total = (contribs ?? []).reduce((s, c) => s + Number(c.amount), 0);
-
-    const patch: Record<string, unknown> = { current_amount: total };
+    // Increment the goal's existing balance (which may have been seeded on
+    // creation without contribution rows) by this contribution.
+    const newAmount = Number(goal.current_amount) + Number(dto.amount);
+    const patch: Record<string, unknown> = { current_amount: newAmount };
     // Only auto-complete an active goal; never resurrect a paused/cancelled one.
-    if (goal.status === 'active' && total >= Number(goal.target_amount)) {
+    if (goal.status === 'active' && newAmount >= Number(goal.target_amount)) {
       patch.status = 'completed';
     }
 

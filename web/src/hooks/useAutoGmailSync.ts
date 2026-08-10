@@ -54,8 +54,8 @@ export function useAutoGmailSync(
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!res.ok) return; // don't arm the throttle on a failed sync
         markSynced();
-        if (!res.ok) return;
 
         const result = (await res.json()) as { transactionsCreated?: number };
         const created = result.transactionsCreated ?? 0;

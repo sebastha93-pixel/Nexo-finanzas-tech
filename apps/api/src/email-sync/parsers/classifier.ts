@@ -94,15 +94,20 @@ const INCOME_KEYWORDS = [
 // Unambiguous INCOME signals that must win even when a generic expense word
 // like "compra" or "débito" also appears (refunds, reversals, money received).
 // A refund email ("Te devolvimos $80.000 de tu compra") must NOT be an expense.
+// Only multi-word, unambiguous "money received / refunded" phrases. Bare tokens
+// like "nomina"/"salario"/"reverso" are intentionally NOT here — they can appear
+// as substrings of merchant names or ambiguous reversals; they stay in the
+// normal INCOME list (checked AFTER expense keywords).
 const STRONG_INCOME_KEYWORDS = [
   'te devolvimos',
+  'te devolvieron',
   'devolución',
   'devolucion',
   'reintegro',
-  'reverso',
-  'reversión',
-  'reversion',
-  'reversa',
+  'reverso compra',
+  'reverso de compra',
+  'reversion compra',
+  'reversión compra',
   'te llegó',
   'te llego',
   'te llegaron',
@@ -117,9 +122,6 @@ const STRONG_INCOME_KEYWORDS = [
   'abono pago de nómina',
   'abono por nomina',
   'abono por nómina',
-  'nómina',
-  'nomina',
-  'salario',
 ];
 
 export function classifyTransaction(
