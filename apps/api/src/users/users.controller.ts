@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Post, Delete, Body, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -26,4 +26,8 @@ export class UsersController {
 
   @Get('categories')
   getCategories(@CurrentUser() user: User) { return this.service.getCategories(user.id); }
+
+  @Delete('account')
+  @HttpCode(HttpStatus.OK)
+  deleteAccount(@CurrentUser() user: User) { return this.service.deleteAccount(user.id); }
 }
